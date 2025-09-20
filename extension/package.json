@@ -1,0 +1,43 @@
+{
+  "name": "sidekick-pro",
+  "displayName": "Sidekick Pro",
+  "description": "AI Development Suite with Repository Memory",
+  "version": "0.1.0",
+  "publisher": "sidekick-pro",
+  "engines": {"vscode": "^1.74.0"},
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/main.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sidekick.search",
+        "title": "Sidekick Pro: Search Repository"
+      },
+      {
+        "command": "sidekick.dashboard.open",
+        "title": "Sidekick Pro: Open Dashboard"
+      },
+      {
+        "command": "sidekick.index",
+        "title": "Sidekick Pro: Index Repository"
+      },
+      {
+        "command": "sidekick.chat.open",
+        "title": "Sidekick Pro: Open Chat"
+      },
+      {
+        "command": "sidekick.explain",
+        "title": "Sidekick Pro: Explain Code"
+      },
+      {
+        "command": "sidekick.refactor",
+        "title": "Sidekick Pro: Refactor Code"
+      },
+      {
+        "command": "sidekick.test",
+        "title": "Sidekick Pro: Generate Tests"
+      }
+    ]
+  }
+}

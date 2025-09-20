@@ -1,0 +1,319 @@
+{
+  "name": "sidekick-ai",
+  "displayName": "Sidekick AI - Local Coding Assistant",
+  "description": "Privacy-focused AI coding assistant that runs 100% locally on your machine",
+  "version": "1.2.2",
+  "publisher": "NaveenBabu",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "copilot",
+    "local AI",
+    "privacy copilot",
+    "coding assistant",
+    "privacy",
+    "local",
+    "offline copilot",
+    "llama copilot",
+    "github copilot",
+    "code completion"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sidekick-ai.openChat",
+        "title": "Open Chat",
+        "category": "sidekick AI",
+        "icon": {
+          "light": "resources/icon.svg",
+          "dark": "resources/icon.svg"
+        }
+      },
+      {
+        "command": "sidekick-ai.explain",
+        "title": "Explain Code - Sidekick AI",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "sidekick-ai.refactor",
+        "title": "Refactor Code - Sidekick AI",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sidekick-ai.generateTests",
+        "title": "Generate Tests - Sidekick AI",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "sidekick-ai.fixError",
+        "title": "Fix Error with AI",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.quickFix",
+        "title": "Quick Fix",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.explainError",
+        "title": "Explain Error",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.privacyStatus",
+        "title": "Show Privacy Status",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "sidekick-ai.switchModel",
+        "title": "Switch AI Model",
+        "icon": "$(server)"
+      },
+      {
+        "command": "sidekick-ai.triggerCompletion",
+        "title": "Trigger AI Completion"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sidekick-ai.openChat",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "sidekick-ai.explain",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "sidekick-ai.refactor",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "sidekick-ai.triggerCompletion",
+        "key": "ctrl+space",
+        "mac": "cmd+space",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sidekick-ai",
+          "title": "sidekick-ai",
+          "icon": "resource/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "sidekick-ai.chatView",
+          "name": "Sidekick AI Chat",
+          "icon": "$(comment-discussion)",
+          "visibility": "visible",
+          "when": "true"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "sidekick-ai Copilot",
+      "properties": {
+        "sidekick-ai.modelPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to your GGUF model file (e.g., qwen2.5-coder-1.5b-instruct-q4_k_m.gguf)"
+        },
+        "sidekick-ai.llamaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to llama-server executable (auto-detected if not set)"
+        },
+        "sidekick-ai.port": {
+          "type": "number",
+          "default": 8080,
+          "description": "Port for llama.cpp server"
+        },
+        "sidekick-ai.contextSize": {
+          "type": "number",
+          "default": 4096,
+          "description": "Context window size for the model"
+        },
+        "sidekick-ai.useGpu": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use GPU acceleration if available (requires CUDA/Metal)"
+        },
+        "sidekick-ai.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start llama.cpp server"
+        },
+        "sidekick-ai.modelName": {
+          "type": "string",
+          "default": "deepseek-coder:6.7b",
+          "description": "Local AI model to use",
+          "enum": [
+            "deepseek-coder:6.7b",
+            "codellama:7b",
+            "starcoder2:3b",
+            "codellama:13b"
+          ]
+        },
+        "sidekick-ai.enableInlineCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline code completions"
+        },
+        "sidekick-ai.completionDelay": {
+          "type": "number",
+          "default": 300,
+          "description": "Delay in ms before triggering completion"
+        },
+        "sidekick-ai.maxContextSize": {
+          "type": "number",
+          "default": 2000,
+          "description": "Maximum context size in tokens"
+        },
+        "sidekick-ai.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Model temperature (0 = deterministic, 1 = creative)"
+        },
+        "sidekick-ai.enableTelemetry": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable telemetry (always false for privacy)"
+        },
+        "sidekick-ai.excludePatterns": {
+          "type": "array",
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/*.env",
+            "**/*.key",
+            "**/secrets/**"
+          ],
+          "description": "File patterns to exclude from indexing"
+        },
+        "sidekick-ai.completions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable inline completions"
+        },
+        "sidekick-ai.completions.delay": {
+          "type": "number",
+          "default": 500,
+          "description": "Delay in ms before showing completions"
+        },
+        "sidekick-ai.completions.maxLength": {
+          "type": "number",
+          "default": 150,
+          "description": "Maximum length of completions in characters"
+        }
+      }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "sidekick-ai.openChat",
+          "group": "navigation",
+          "when": "editorIsOpen"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "sidekick-ai.openChat",
+          "group": "navigation",
+          "when": "editorTextFocus"
+        },
+        {
+          "when": "editorTextFocus",
+          "command": "sidekick-ai.explain",
+          "group": "navigation",
+          "title": "Explain Code - sidekick-ai"
+        },
+        {
+          "when": "editorTextFocus",
+          "command": "sidekick-ai.refactor",
+          "group": "navigation",
+          "title": "Refactor Code - sidekick-ai"
+        },
+        {
+          "when": "editorTextFocus",
+          "command": "sidekick-ai.generateTests",
+          "group": "navigation",
+          "title": "Generate Tests - sidekick-ai"
+        }
+      ]
+    }
+  },
+  "icons": {
+    "sidekick-icon": {
+      "description": "Sidekick AI Icon",
+      "default": {
+        "fontPath": "resources/icon.svg",
+        "fontCharacter": "\\E001"
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.17.2",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.40.0",
+    "@typescript-eslint/parser": "^8.40.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.8",
+    "eslint": "^9.32.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "natural": "^8.1.0",
+    "vectra": "^0.11.1"
+  },
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#2b2b2b",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Naveen-babu1/sidekick-ai"
+  },
+  "homepage": "https://github.com/Naveen-babu1/sidekick-ai",
+  "bugs": {
+    "url": "https://github.com/Naveen-babu1/sidekick-ai"
+  },
+  "license": "MIT"
+}

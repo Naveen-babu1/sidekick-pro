@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+*.db
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+out/
+*.vsix
+npm-debug.log*
+
+# Models
+*.gguf
+*.bin
+models/
+
+# Docker
+docker/data/
+
+# IDE
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Qdrant data
+qdrant_data/

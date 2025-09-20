@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///D:/projects/sidekick-pro/frontend/app/providers.tsx"],"sourcesContent":["'use client'\r\n\r\nimport { QueryClient, QueryClientProvider } from '@tanstack/react-query'\r\nimport { useState } from 'react'\r\n\r\nexport function Providers({ children }: { children: React.ReactNode }) {\r\n  const [queryClient] = useState(() => new QueryClient({\r\n    defaultOptions: {\r\n      queries: {\r\n        staleTime: 60 * 1000,\r\n        refetchInterval: 30 * 1000,\r\n      },\r\n    },\r\n  }))\r\n\r\n  return (\r\n    <QueryClientProvider client={queryClient}>\r\n      {children}\r\n    </QueryClientProvider>\r\n  )\r\n}"],"names":[],"mappings":";;;;;AAEA;AAAA;AACA;;;AAHA;;;AAKO,SAAS,UAAU,KAA2C;QAA3C,EAAE,QAAQ,EAAiC,GAA3C;;IACxB,MAAM,CAAC,YAAY,GAAG,IAAA,yKAAQ;8BAAC,IAAM,IAAI,+LAAW,CAAC;gBACnD,gBAAgB;oBACd,SAAS;wBACP,WAAW,KAAK;wBAChB,iBAAiB,KAAK;oBACxB;gBACF;YACF;;IAEA,qBACE,6LAAC,gNAAmB;QAAC,QAAQ;kBAC1B;;;;;;AAGP;GAfgB;KAAA","debugId":null}}]
+}
