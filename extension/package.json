@@ -11,24 +11,56 @@
   "contributes": {
     "commands": [
       {
-        "command": "sidekick.chat.open",
-        "title": "Sidekick Pro: Open Chat"
+        "command": "sidekick-ai.explainCode",
+        "title": "Explain Code",
+        "category": "Sidekick AI"
       },
       {
-        "command": "sidekick.search",
-        "title": "Sidekick Pro: Search Repository"
+        "command": "sidekick-ai.refactorCode",
+        "title": "Refactor with AI",
+        "category": "Sidekick AI"
       },
       {
-        "command": "sidekick.dashboard.open",
-        "title": "Sidekick Pro: Open Dashboard"
+        "command": "sidekick-ai.generateTests",
+        "title": "Generate Tests",
+        "category": "Sidekick AI"
       },
       {
-        "command": "sidekick.index",
-        "title": "Sidekick Pro: Index Repository"
+        "command": "sidekick-ai.openChat",
+        "title": "Open AI Chat",
+        "category": "Sidekick AI"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sidekick-ai.explainCode",
+          "when": "editorHasSelection",
+          "group": "sidekickAI@1"
+        },
+        {
+          "command": "sidekick-ai.refactorCode",
+          "when": "editorHasSelection",
+          "group": "sidekickAI@2"
+        },
+        {
+          "command": "sidekick-ai.generateTests",
+          "when": "editorTextFocus",
+          "group": "sidekickAI@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "sidekick-ai.explainCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
       },
       {
-        "command": "sidekick.switchModel",
-        "title": "Sidekick Pro: Switch Model Provider"
+        "command": "sidekick-ai.openChat",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
       }
     ]
   },

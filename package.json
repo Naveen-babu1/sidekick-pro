@@ -10,13 +10,9 @@
   "categories": [
     "Other"
   ],
-  "main": "./out/main.js",
+  "main": "./out/extension.js",
   "activationEvents": [
-    "onCommand:sidekick.chat.open",
-    "onCommand:sidekick.switchModel",
-    "onCommand:sidekick.search",
-    "onCommand:sidekick.dashboard.open",
-    "onCommand:sidekick.index"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
@@ -25,8 +21,18 @@
         "title": "Sidekick Pro: Open Chat"
       },
       {
+        "command": "sidekick-ai.openChat",
+        "title": "Open AI Chat",
+        "category": "Sidekick AI"
+      },
+      {
         "command": "sidekick.switchModel",
         "title": "Sidekick Pro: Switch Model"
+      },
+      {
+        "command": "sidekick-ai.switchProvider",
+        "title": "Switch AI Provider",
+        "category": "Sidekick AI"
       },
       {
         "command": "sidekick.search",
@@ -39,6 +45,103 @@
       {
         "command": "sidekick.index",
         "title": "Sidekick Pro: Index Repository"
+      },
+      {
+        "command": "sidekick-ai.explainCode",
+        "title": "Explain Code",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.refactorCode",
+        "title": "Refactor with AI",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.generateTests",
+        "title": "Generate Tests",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.fixError",
+        "title": "Fix with AI",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.explainError",
+        "title": "Explain Error",
+        "category": "Sidekick AI"
+      },
+      {
+        "command": "sidekick-ai.privacyStatus",
+        "title": "Privacy Status",
+        "category": "Sidekick AI"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sidekick-ai.explainCode",
+          "when": "editorHasSelection",
+          "group": "1_sidekickAI@1"
+        },
+        {
+          "command": "sidekick-ai.refactorCode",
+          "when": "editorHasSelection",
+          "group": "1_sidekickAI@2"
+        },
+        {
+          "command": "sidekick-ai.generateTests",
+          "when": "editorTextFocus",
+          "group": "1_sidekickAI@3"
+        },
+        {
+          "command": "sidekick-ai.fixError",
+          "when": "editorHasSelection",
+          "group": "1_sidekickAI@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sidekick-ai.explainCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "sidekick-ai.refactorCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "sidekick-ai.generateTests",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "sidekick-ai.fixError",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "sidekick-ai.explainCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "sidekick-ai.openChat",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "sidekick-ai.refactorCode",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "sidekick-ai.generateTests",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -59,6 +162,31 @@
           "default": "local",
           "description": "Model provider",
           "scope": "application"
+        },
+        "sidekick-ai.modelPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the GGUF model file for local AI"
+        },
+        "sidekick-ai.llamaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to llama.cpp server executable"
+        },
+        "sidekick-ai.port": {
+          "type": "number",
+          "default": 8080,
+          "description": "Port for the llama.cpp server"
+        },
+        "sidekick-ai.contextSize": {
+          "type": "number",
+          "default": 4096,
+          "description": "Context size for the model"
+        },
+        "sidekick-ai.useGpu": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use GPU acceleration if available"
         }
       }
     }
@@ -68,6 +196,12 @@
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
-    "@types/vscode": "^1.104.0"
+    "@types/vscode": "^1.104.0",
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
   }
 }

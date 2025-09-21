@@ -5,12 +5,13 @@
     "outDir": "out",
     "lib": ["ES2020"],
     "sourceMap": true,
-    "rootDir": "src",
-    "strict": false,
+    "rootDir": "extension/src",
+    "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
+  "include": ["extension/src/**/*"],
   "exclude": ["node_modules", ".vscode-test", "src/test/**/*", "src/extension.original.ts"]
 }
