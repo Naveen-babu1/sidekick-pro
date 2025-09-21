@@ -1,220 +1,247 @@
 // providers/ChatViewProvider.ts
-import * as vscode from 'vscode';
-import { LocalAIProvider } from './LocalAIProvider';
-import { CodeIndexer } from '../indexer/CodeIndexer';
-import { PrivacyGuard } from '../security/PrivacyGuard';
+import * as vscode from "vscode";
+import { LocalAIProvider } from "./LocalAIProvider";
+import { CodeIndexer } from "../indexer/CodeIndexer";
+import { PrivacyGuard } from "../security/PrivacyGuard";
+import { ModelService } from "../services/modelService";
 
 interface ChatMessage {
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: Date;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'sidekick-ai.chatView';
-    private _view?: vscode.WebviewView;
-    private messages: ChatMessage[] = [];
-    
-    constructor(
-        private readonly _extensionUri: vscode.Uri,
-        private context: vscode.ExtensionContext,
-        private localAI: LocalAIProvider,
-        private indexer: CodeIndexer,
-        private privacyGuard: PrivacyGuard
-    ) {
-        // Load chat history from storage
-        this.loadChatHistory();
-    }
-    
-    public resolveWebviewView(
-        webviewView: vscode.WebviewView,
-        context: vscode.WebviewViewResolveContext,
-        _token: vscode.CancellationToken
-    ) {
-        this._view = webviewView;
-        
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this._extensionUri]
-        };
-        
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-        
-        // Handle messages from the webview
-        webviewView.webview.onDidReceiveMessage(async (data) => {
-            switch (data.type) {
-                case 'sendMessage':
-                    await this.handleUserMessage(data.message);
-                    break;
-                case 'clearChat':
-                    this.clearChat();
-                    break;
-                case 'executeCommand':
-                    await this.executeCommand(data.command, data.code);
-                    break;
-                case 'insertCode':
-                    this.insertCodeAtCursor(data.code);
-                    break;
-                case 'copyCode':
-                    await vscode.env.clipboard.writeText(data.code);
-                    vscode.window.showInformationMessage('Code copied to clipboard!');
-                    break;
-            }
-        });
-        
-        // Send existing messages to webview
-        this.messages.forEach(msg => {
-            this._view?.webview.postMessage({
-                type: 'addMessage',
-                message: msg
-            });
-        });
-    }
-    
-    private async handleUserMessage(message: string) {
-        // Add user message
-        const userMessage: ChatMessage = {
-            role: 'user',
-            content: message,
-            timestamp: new Date()
-        };
-        this.messages.push(userMessage);
-        this.saveChatHistory();
-        
-        // Send user message to webview
-        this._view?.webview.postMessage({
-            type: 'addMessage',
-            message: userMessage
-        });
-        
-        // Show typing indicator
-        this._view?.webview.postMessage({
-            type: 'setTyping',
-            isTyping: true
-        });
-        
-        try {
-            // Get current editor context
-            const editor = vscode.window.activeTextEditor;
-            let context = '';
-            
-            if (editor) {
-                const selection = editor.selection;
-                if (!selection.isEmpty) {
-                    context = `Selected code:\n\`\`\`${editor.document.languageId}\n${editor.document.getText(selection)}\n\`\`\`\n\n`;
-                } else {
-                    // Get current function or class context
-                    const position = editor.selection.active;
-                    const document = editor.document;
-                    const startLine = Math.max(0, position.line - 10);
-                    const endLine = Math.min(document.lineCount - 1, position.line + 10);
-                    const surroundingCode = document.getText(new vscode.Range(startLine, 0, endLine, Number.MAX_VALUE));
-                    context = `Current context:\n\`\`\`${editor.document.languageId}\n${surroundingCode}\n\`\`\`\n\n`;
-                }
-            }
-            
-            // Get project context from indexer
-            const projectContext = this.indexer.getContext();
-            
-            // Process message with AI
-            const fullContext = `${projectContext}\n\n${context}`;
-            
-            // Check if message is a command
-            if (message.startsWith('/')) {
-                await this.handleCommand(message, fullContext);
-            } else {
-                // Regular chat message
-                const response = await this.localAI.explainCode(message, fullContext);
-                
-                // Add assistant message
-                const assistantMessage: ChatMessage = {
-                    role: 'assistant',
-                    content: response,
-                    timestamp: new Date()
-                };
-                this.messages.push(assistantMessage);
-                this.saveChatHistory();
-                
-                // Send assistant message to webview
-                this._view?.webview.postMessage({
-                    type: 'addMessage',
-                    message: assistantMessage
-                });
-            }
-        } catch (error) {
-            const errorMessage: ChatMessage = {
-                role: 'assistant',
-                content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
-                timestamp: new Date()
-            };
-            this.messages.push(errorMessage);
-            this._view?.webview.postMessage({
-                type: 'addMessage',
-                message: errorMessage
-            });
-        } finally {
-            // Hide typing indicator
-            this._view?.webview.postMessage({
-                type: 'setTyping',
-                isTyping: false
-            });
+  public static readonly viewType = "sidekick-ai.chatView";
+  private _view?: vscode.WebviewView;
+  private messages: ChatMessage[] = [];
+  private modelService?: ModelService;
+
+  constructor(
+    private readonly _extensionUri: vscode.Uri,
+    private context: vscode.ExtensionContext,
+    private localAI: LocalAIProvider,
+    private indexer: CodeIndexer,
+    private privacyGuard: PrivacyGuard
+  ) {
+    // Load chat history from storage
+    this.modelService = new ModelService(context);
+    this.loadChatHistory();
+  }
+
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ) {
+    this._view = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri],
+    };
+
+    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+
+    // Handle messages from the webview
+    webviewView.webview.onDidReceiveMessage(async (data) => {
+      switch (data.type) {
+        case "sendMessage":
+          await this.handleUserMessage(data.message);
+          break;
+        case "clearChat":
+          this.clearChat();
+          break;
+        case "executeCommand":
+          await this.executeCommand(data.command, data.code);
+          break;
+        case "insertCode":
+          this.insertCodeAtCursor(data.code);
+          break;
+        case "copyCode":
+          await vscode.env.clipboard.writeText(data.code);
+          vscode.window.showInformationMessage("Code copied to clipboard!");
+          break;
+      }
+    });
+
+    // Send existing messages to webview
+    this.messages.forEach((msg) => {
+      this._view?.webview.postMessage({
+        type: "addMessage",
+        message: msg,
+      });
+    });
+  }
+
+  private async handleUserMessage(message: string) {
+    // Add user message
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: message,
+      timestamp: new Date(),
+    };
+    this.messages.push(userMessage);
+    this.saveChatHistory();
+
+    // Send user message to webview
+    this._view?.webview.postMessage({
+      type: "addMessage",
+      message: userMessage,
+    });
+
+    // Show typing indicator
+    this._view?.webview.postMessage({
+      type: "setTyping",
+      isTyping: true,
+    });
+
+    try {
+      // Get current editor context
+      const editor = vscode.window.activeTextEditor;
+      let context = "";
+
+      if (editor) {
+        const selection = editor.selection;
+        if (!selection.isEmpty) {
+          context = `Selected code:\n\`\`\`${
+            editor.document.languageId
+          }\n${editor.document.getText(selection)}\n\`\`\`\n\n`;
+        } else {
+          // Get current function or class context
+          const position = editor.selection.active;
+          const document = editor.document;
+          const startLine = Math.max(0, position.line - 10);
+          const endLine = Math.min(document.lineCount - 1, position.line + 10);
+          const surroundingCode = document.getText(
+            new vscode.Range(startLine, 0, endLine, Number.MAX_VALUE)
+          );
+          context = `Current context:\n\`\`\`${editor.document.languageId}\n${surroundingCode}\n\`\`\`\n\n`;
         }
+      }
+
+      // Use ModelService instead of LocalAI directly
+      if (!this.modelService) {
+        this.modelService = new ModelService(this.context);
+      }
+
+      // Get project context from indexer
+      const projectContext = this.indexer.getContext();
+
+      // Process message with AI
+      const fullContext = `${projectContext}\n\n${context}`;
+
+    //   let response: string;
+      // Check if message is a command
+      if (message.startsWith("/")) {
+        await this.handleCommand(message, context);
+      } else {
+        // Regular chat message
+        const response = await this.modelService.chat(message, context);
+
+        // Add assistant message
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content: response,
+          timestamp: new Date(),
+        };
+        this.messages.push(assistantMessage);
+        this.saveChatHistory();
+
+        // Send assistant message to webview
+        this._view?.webview.postMessage({
+          type: "addMessage",
+          message: assistantMessage,
+        });
+      }
+    } catch (error) {
+      const errorMessage: ChatMessage = {
+        role: "assistant",
+        content: `Error: ${
+          error instanceof Error ? error.message : "Unknown error occurred"
+        }`,
+        timestamp: new Date(),
+      };
+      this.messages.push(errorMessage);
+      this._view?.webview.postMessage({
+        type: "addMessage",
+        message: errorMessage,
+      });
+    } finally {
+      // Hide typing indicator
+      this._view?.webview.postMessage({
+        type: "setTyping",
+        isTyping: false,
+      });
     }
-    
-    private async handleCommand(command: string, context: string) {
-        const [cmd, ...args] = command.split(' ');
-        const arg = args.join(' ');
-        
-        let response = '';
-        let code = '';
-        
-        switch (cmd) {
-            case '/explain':
-                const editor = vscode.window.activeTextEditor;
-                if (editor && !editor.selection.isEmpty) {
-                    const selectedCode = editor.document.getText(editor.selection);
-                    response = await this.localAI.explainCode(selectedCode, context);
-                } else {
-                    response = 'Please select some code to explain.';
-                }
-                break;
-                
-            case '/refactor':
-                if (editor && !editor.selection.isEmpty) {
-                    const selectedCode = editor.document.getText(editor.selection);
-                    code = await this.localAI.refactorCode(selectedCode, arg || 'improve this code', context);
-                    response = `Here's the refactored code:\n\n\`\`\`javascript\n${code}\n\`\`\``;
-                } else {
-                    response = 'Please select some code to refactor.';
-                }
-                break;
-                
-            case '/test':
-                if (editor && !editor.selection.isEmpty) {
-                    const selectedCode = editor.document.getText(editor.selection);
-                    code = await this.localAI.generateTests(selectedCode, context);
-                    response = `Here are the tests:\n\n\`\`\`javascript\n${code}\n\`\`\``;
-                } else {
-                    response = 'Please select a function to generate tests.';
-                }
-                break;
-                
-            case '/fix':
-                if (editor) {
-                    const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
-                    if (diagnostics.length > 0) {
-                        const error = diagnostics[0];
-                        const errorLine = editor.document.lineAt(error.range.start.line).text;
-                        code = await this.localAI.refactorCode(errorLine, `fix this error: ${error.message}`, context);
-                        response = `Here's the fix:\n\n\`\`\`javascript\n${code}\n\`\`\``;
-                    } else {
-                        response = 'No errors found in the current file.';
-                    }
-                }
-                break;
-                
-            case '/help':
-                response = `Available commands:
+  }
+
+  private async handleCommand(command: string, context: string) {
+    const [cmd, ...args] = command.split(" ");
+    const arg = args.join(" ");
+
+    let response = "";
+    let code = "";
+
+    switch (cmd) {
+      case "/explain":
+        const editor = vscode.window.activeTextEditor;
+        if (editor && !editor.selection.isEmpty) {
+          const selectedCode = editor.document.getText(editor.selection);
+          response = await this.localAI.explainCode(selectedCode, context);
+        } else {
+          response = "Please select some code to explain.";
+        }
+        break;
+
+      case "/refactor":
+        if (editor && !editor.selection.isEmpty) {
+          const selectedCode = editor.document.getText(editor.selection);
+          code = await this.localAI.refactorCode(
+            selectedCode,
+            arg || "improve this code",
+            context
+          );
+          response = `Here's the refactored code:\n\n\`\`\`javascript\n${code}\n\`\`\``;
+        } else {
+          response = "Please select some code to refactor.";
+        }
+        break;
+
+      case "/test":
+        if (editor && !editor.selection.isEmpty) {
+          const selectedCode = editor.document.getText(editor.selection);
+          code = await this.localAI.generateTests(selectedCode, context);
+          response = `Here are the tests:\n\n\`\`\`javascript\n${code}\n\`\`\``;
+        } else {
+          response = "Please select a function to generate tests.";
+        }
+        break;
+
+      case "/fix":
+        if (editor) {
+          const diagnostics = vscode.languages.getDiagnostics(
+            editor.document.uri
+          );
+          if (diagnostics.length > 0) {
+            const error = diagnostics[0];
+            const errorLine = editor.document.lineAt(
+              error.range.start.line
+            ).text;
+            code = await this.localAI.refactorCode(
+              errorLine,
+              `fix this error: ${error.message}`,
+              context
+            );
+            response = `Here's the fix:\n\n\`\`\`javascript\n${code}\n\`\`\``;
+          } else {
+            response = "No errors found in the current file.";
+          }
+        }
+        break;
+
+      case "/help":
+        response = `Available commands:
 - **/explain** - Explain selected code
 - **/refactor [instruction]** - Refactor selected code
 - **/test** - Generate tests for selected function
@@ -222,116 +249,123 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 - **/help** - Show this help message
 
 You can also ask questions directly without commands!`;
-                break;
-                
-            default:
-                response = `Unknown command: ${cmd}. Type /help for available commands.`;
-        }
-        
-        // Add assistant message
-        const assistantMessage: ChatMessage = {
-            role: 'assistant',
-            content: response,
-            timestamp: new Date()
-        };
-        this.messages.push(assistantMessage);
-        this.saveChatHistory();
-        
-        // Send assistant message to webview
-        this._view?.webview.postMessage({
-            type: 'addMessage',
-            message: assistantMessage
+        break;
+
+      default:
+        response = `Unknown command: ${cmd}. Type /help for available commands.`;
+    }
+
+    // Add assistant message
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: response,
+      timestamp: new Date(),
+    };
+    this.messages.push(assistantMessage);
+    this.saveChatHistory();
+
+    // Send assistant message to webview
+    this._view?.webview.postMessage({
+      type: "addMessage",
+      message: assistantMessage,
+    });
+  }
+
+  private async executeCommand(command: string, code: string) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    switch (command) {
+      case "replace":
+        // Replace selected text with generated code
+        const selection = editor.selection;
+        await editor.edit((editBuilder) => {
+          editBuilder.replace(selection, code);
         });
-    }
-    
-    private async executeCommand(command: string, code: string) {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) return;
-        
-        switch (command) {
-            case 'replace':
-                // Replace selected text with generated code
-                const selection = editor.selection;
-                await editor.edit(editBuilder => {
-                    editBuilder.replace(selection, code);
-                });
-                break;
-                
-            case 'insert':
-                // Insert code at cursor position
-                const position = editor.selection.active;
-                await editor.edit(editBuilder => {
-                    editBuilder.insert(position, code);
-                });
-                break;
-        }
-    }
-    
-    private insertCodeAtCursor(code: string) {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) return;
-        
+        break;
+
+      case "insert":
+        // Insert code at cursor position
         const position = editor.selection.active;
-        editor.edit(editBuilder => {
-            editBuilder.insert(position, code);
+        await editor.edit((editBuilder) => {
+          editBuilder.insert(position, code);
         });
+        break;
     }
-    
-    private clearChat() {
-        this.messages = [];
-        this.saveChatHistory();
-        this._view?.webview.postMessage({
-            type: 'clearMessages'
-        });
+  }
+
+  private insertCodeAtCursor(code: string) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    const position = editor.selection.active;
+    editor.edit((editBuilder) => {
+      editBuilder.insert(position, code);
+    });
+  }
+
+  private clearChat() {
+    this.messages = [];
+    this.saveChatHistory();
+    this._view?.webview.postMessage({
+      type: "clearMessages",
+    });
+  }
+
+  private loadChatHistory() {
+    const history = this.context.globalState.get<ChatMessage[]>(
+      "chatHistory",
+      []
+    );
+    this.messages = history.map((msg) => ({
+      ...msg,
+      timestamp: new Date(msg.timestamp),
+    }));
+  }
+
+  private saveChatHistory() {
+    // Only keep last 100 messages
+    const toSave = this.messages.slice(-100);
+    this.context.globalState.update("chatHistory", toSave);
+  }
+
+  public addMessage(type: string, input: string, response: string) {
+    // For compatibility with existing code
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: input,
+      timestamp: new Date(),
+    };
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: response,
+      timestamp: new Date(),
+    };
+
+    this.messages.push(userMessage, assistantMessage);
+    this.saveChatHistory();
+
+    if (this._view) {
+      this._view.webview.postMessage({
+        type: "addMessage",
+        message: userMessage,
+      });
+      this._view.webview.postMessage({
+        type: "addMessage",
+        message: assistantMessage,
+      });
     }
-    
-    private loadChatHistory() {
-        const history = this.context.globalState.get<ChatMessage[]>('chatHistory', []);
-        this.messages = history.map(msg => ({
-            ...msg,
-            timestamp: new Date(msg.timestamp)
-        }));
-    }
-    
-    private saveChatHistory() {
-        // Only keep last 100 messages
-        const toSave = this.messages.slice(-100);
-        this.context.globalState.update('chatHistory', toSave);
-    }
-    
-    public addMessage(type: string, input: string, response: string) {
-        // For compatibility with existing code
-        const userMessage: ChatMessage = {
-            role: 'user',
-            content: input,
-            timestamp: new Date()
-        };
-        const assistantMessage: ChatMessage = {
-            role: 'assistant',
-            content: response,
-            timestamp: new Date()
-        };
-        
-        this.messages.push(userMessage, assistantMessage);
-        this.saveChatHistory();
-        
-        if (this._view) {
-            this._view.webview.postMessage({
-                type: 'addMessage',
-                message: userMessage
-            });
-            this._view.webview.postMessage({
-                type: 'addMessage',
-                message: assistantMessage
-            });
-        }
-    }
-    
-    private _getHtmlForWebview(webview: vscode.Webview) {
-        const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'chat.css'));
-        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'chat.js'));
-        
-        return `<!DOCTYPE html>
+  }
+
+  private _getHtmlForWebview(webview: vscode.Webview) {
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "chat.css")
+    );
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "chat.js")
+    );
+
+    return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
@@ -854,5 +888,5 @@ You can also ask questions directly without commands!`;
             </script>
         </body>
         </html>`;
-    }
+  }
 }

@@ -7,6 +7,7 @@ import { PrivacyGuard } from "./security/PrivacyGuard";
 import { InlineCompletionProvider } from "./providers/InlineCompletionProvider";
 import { CodeFixProvider } from "./providers/CodeFixProvider";
 import { CodeFixHandler } from "./providers/CodeFixHandler";
+import { ModelService } from "./services/modelService";
 // import { InlineCodeFixProvider } from "./providers/InlineCodeFixProvider";
 
 // Chat Panel Class - Creates a webview panel on the right side
@@ -15,15 +16,18 @@ class ChatPanel {
   private readonly _panel: vscode.WebviewPanel;
   private _disposables: vscode.Disposable[] = [];
   private messages: Array<{ role: string; content: string }> = [];
+  private modelService!: ModelService;
 
   constructor(
     panel: vscode.WebviewPanel,
     private context: vscode.ExtensionContext,
     private localAI: LocalAIProvider,
     private indexer: CodeIndexer,
-    private privacyGuard: PrivacyGuard
+    private privacyGuard: PrivacyGuard,
+    modelService: ModelService
   ) {
     this._panel = panel;
+    this.modelService = modelService;
     this._panel.webview.html = this._getWebviewContent();
 
     // Handle messages from the webview
@@ -60,7 +64,8 @@ class ChatPanel {
     context: vscode.ExtensionContext,
     localAI: LocalAIProvider,
     indexer: CodeIndexer,
-    privacyGuard: PrivacyGuard
+    privacyGuard: PrivacyGuard,
+    modelService: ModelService
   ) {
     const column = vscode.ViewColumn.Two; // This makes it appear on the right
 
@@ -87,7 +92,8 @@ class ChatPanel {
       context,
       localAI,
       indexer,
-      privacyGuard
+      privacyGuard,
+      modelService
     );
   }
 
@@ -143,7 +149,7 @@ class ChatPanel {
         await this.handleCommand(text, context);
       } else {
         // Regular chat
-        const response = await this.localAI.chat(text, context);
+        const response = await this.modelService.chat(text, context);
         this.messages.push({ role: "assistant", content: response });
         this._panel.webview.postMessage({
           type: "addMessage",
@@ -176,7 +182,7 @@ class ChatPanel {
         if (editor) {
           const selectedText = editor.document.getText(editor.selection);
           if (selectedText) {
-            const explanation = await this.localAI.explainCode(
+            const explanation = await this.modelService.explainCode(
               selectedText,
               context
             );
@@ -201,7 +207,7 @@ class ChatPanel {
           const selectedText = editor.document.getText(editor.selection);
           if (selectedText) {
             const instruction = args.join(" ") || "improve this code";
-            const refactored = await this.localAI.refactorCode(
+            const refactored = await this.modelService.refactorCode(
               selectedText,
               instruction,
               context
@@ -222,7 +228,7 @@ class ChatPanel {
           const selectedText =
             editor.document.getText(editor.selection) ||
             editor.document.getText();
-          const tests = await this.localAI.generateTests(selectedText, context);
+          const tests = await this.modelService.generateTests(selectedText, context);
           const response = `Generated tests:\n\n\`\`\`${editor.document.languageId}\n${tests}\n\`\`\``;
           this.messages.push({ role: "assistant", content: response });
           this._panel.webview.postMessage({
@@ -829,6 +835,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Check for local model availability
   const localAI = new LocalAIProvider(context);
+  const modelService = new ModelService(context);
 
   // ADD THIS: Show welcome message for first-time users
   if (isFirstRun) {
@@ -1015,8 +1022,53 @@ Provide a brief explanation and how to fix it:`;
     )
   );
 
+  // Add this command in the activate function
+context.subscriptions.push(
+  vscode.commands.registerCommand("sidekick-ai.switchProvider", async () => {
+    const providers = ["OpenAI (Faster)", "Local (Offline)"];
+    const selected = await vscode.window.showQuickPick(providers, {
+      placeHolder: "Select AI provider"
+    });
+    
+    if (selected) {
+      const provider = selected.includes("OpenAI") ? "openai" : "local";
+      
+      // Update .env file
+      const fs = require('fs');
+      const path = require('path');
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      const envPath = workspaceFolder ? 
+        path.join(workspaceFolder.uri.fsPath, '.env') :
+        path.join(__dirname, '..', '.env');
+      
+      if (!fs.existsSync(envPath)) {
+        // Create .env if it doesn't exist
+        const template = `# Sidekick AI Configuration
+OPENAI_API_KEY=your-openai-key-here
+DEFAULT_MODEL_PROVIDER=${provider}
+DEFAULT_MODEL_NAME=gpt-3.5-turbo
+`;
+        fs.writeFileSync(envPath, template);
+      } else {
+        let envContent = fs.readFileSync(envPath, 'utf8');
+        const regex = /^DEFAULT_MODEL_PROVIDER=.*$/gm;
+        if (regex.test(envContent)) {
+          envContent = envContent.replace(regex, `DEFAULT_MODEL_PROVIDER=${provider}`);
+        } else {
+          envContent += `\nDEFAULT_MODEL_PROVIDER=${provider}`;
+        }
+        fs.writeFileSync(envPath, envContent);
+      }
+      
+      vscode.window.showInformationMessage(
+        `Switched to ${selected}. Reload window (Ctrl+R) to apply changes.`
+      );
+    }
+  })
+);
+
   // Register the fix command
-  const codeFixHandler = new CodeFixHandler(localAI, context);
+  const codeFixHandler = new CodeFixHandler(context);
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sidekick-ai.fixError",
@@ -1037,7 +1089,7 @@ Provide a brief explanation and how to fix it:`;
   const openChatCommand = vscode.commands.registerCommand(
     "sidekick-ai.openChat",
     () => {
-      ChatPanel.createOrShow(context, localAI, indexer, privacyGuard);
+      ChatPanel.createOrShow(context, localAI, indexer, privacyGuard, modelService);
       chatPanel = ChatPanel.currentPanel;
     }
   );
@@ -1050,7 +1102,7 @@ Provide a brief explanation and how to fix it:`;
 
   // Register inline completion provider
   const inlineProvider = new InlineCompletionProvider(
-    localAI,
+    context,
     indexer,
     privacyGuard
   );
@@ -1188,7 +1240,7 @@ Provide a brief explanation and how to fix it:`;
             editor.setDecorations(explanationDecoration, []);
             explanationDecoration.dispose();
           } else if (action === "Open Chat") {
-            ChatPanel.createOrShow(context, localAI, indexer, privacyGuard);
+            ChatPanel.createOrShow(context, localAI, indexer, privacyGuard, modelService);
             chatPanel = ChatPanel.currentPanel;
             if (chatPanel) {
               chatPanel.addMessage("explain", selectedText, explanation);
@@ -1291,7 +1343,7 @@ Provide a brief explanation and how to fix it:`;
   // Add a Chat button to the status bar with custom icon
   const chatStatusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
-    99 // Priority
+    100 // Priority
   );
 
   // For SVG icons in status bar, you need to use it as a background image

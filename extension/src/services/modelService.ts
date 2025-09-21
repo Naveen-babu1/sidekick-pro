@@ -1,93 +1,165 @@
+// src/services/ModelService.ts
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as dotenv from 'dotenv';
+import { LocalAIProvider } from '../providers/LocalAIProvider';
 
 export class ModelService {
     private config: any = {};
-    private contextKeeperUrl!: string;
+    private localAI: LocalAIProvider;
+    private contextKeeperUrl: string = '';
     
     constructor(private context: vscode.ExtensionContext) {
         this.loadEnvironment();
+        this.localAI = new LocalAIProvider(context);
     }
     
     private loadEnvironment() {
-        // Load .env from workspace root
+        // Load .env from workspace or project root
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (workspaceFolder) {
-            const envPath = path.join(workspaceFolder.uri.fsPath, '.env');
-            if (fs.existsSync(envPath)) {
+        const envPaths = [
+            workspaceFolder ? path.join(workspaceFolder.uri.fsPath, '.env') : null,
+            path.join(__dirname, '../../..', '.env'),
+            path.join(__dirname, '../..', '.env')
+        ].filter(Boolean);
+        
+        for (const envPath of envPaths) {
+            if (envPath && fs.existsSync(envPath)) {
                 const envConfig = dotenv.parse(fs.readFileSync(envPath));
-                process.env = { ...process.env, ...envConfig };
+                Object.assign(process.env, envConfig);
+                break;
             }
         }
         
-        // Load from project root as fallback
-        const projectEnvPath = path.join(__dirname, '../../..', '.env');
-        if (fs.existsSync(projectEnvPath)) {
-            dotenv.config({ path: projectEnvPath });
-        }
-        
-        // Set config from environment or VS Code settings
-        const settings = vscode.workspace.getConfiguration('sidekick-pro');
-        
         this.config = {
-            provider: process.env.DEFAULT_MODEL_PROVIDER || 
-                     settings.get('model.provider', 'local'),
-            openaiKey: process.env.OPENAI_API_KEY || 
-                      settings.get('api.openaiKey', ''),
-            anthropicKey: process.env.ANTHROPIC_API_KEY || 
-                         settings.get('api.anthropicKey', ''),
-            model: process.env.DEFAULT_MODEL_NAME || 
-                  settings.get('model.name', 'gpt-3.5-turbo'),
-            llamaEndpoint: `http://${process.env.LLAMA_CPP_HOST || 'localhost'}:${process.env.LLAMA_CPP_PORT || '8080'}`
+            provider: process.env.DEFAULT_MODEL_PROVIDER || 'openai',
+            openaiKey: process.env.OPENAI_API_KEY || '',
+            model: process.env.DEFAULT_MODEL_NAME || 'gpt-3.5-turbo',
+            codeModel: process.env.CODE_MODEL_NAME || 'gpt-3.5-turbo',
+            temperature: parseFloat(process.env.MODEL_TEMPERATURE || '0.7')
         };
         
         this.contextKeeperUrl = process.env.CONTEXT_KEEPER_URL || 'http://localhost:8000';
     }
     
-    async getCompletion(prompt: string, context?: string): Promise<string> {
-        const enhancedPrompt = context ? 
-            `Repository context:\n${context}\n\nQuery: ${prompt}` : prompt;
+    // Main chat method
+    async chat(message: string, context: string): Promise<string> {
+        if (this.shouldUseOpenAI()) {
+            return this.chatWithOpenAI(message, context);
+        }
+        return this.localAI.chat(message, context);
+    }
+    
+    // Code completion
+    async generateCompletion(prompt: string, context: string, maxTokens: number = 150): Promise<string> {
+        if (this.shouldUseOpenAI()) {
+            return this.getOpenAICodeCompletion(prompt, maxTokens);
+        }
+        return this.localAI.generateCompletion(prompt, context, maxTokens);
+    }
+    
+    // Explain code
+    async explainCode(code: string, context: string): Promise<string> {
+        if (this.shouldUseOpenAI()) {
+            const prompt = `Explain this code in simple terms:\n\n${code}`;
+            return this.chatWithOpenAI(prompt, context);
+        }
+        return this.localAI.explainCode(code, context);
+    }
+    
+    // Refactor code
+    async refactorCode(code: string, instruction: string, context: string): Promise<string> {
+        if (this.shouldUseOpenAI()) {
+            const prompt = `Refactor this code${instruction ? ` to ${instruction}` : ''}:\n\n${code}\n\nReturn only the refactored code:`;
+            const response = await this.chatWithOpenAI(prompt, context);
+            return this.cleanCodeResponse(response);
+        }
+        return this.localAI.refactorCode(code, instruction, context);
+    }
+    
+    // Generate tests
+    async generateTests(code: string, context: string): Promise<string> {
+        if (this.shouldUseOpenAI()) {
+            const prompt = `Generate comprehensive unit tests for this code:\n\n${code}\n\nProvide complete test code:`;
+            const response = await this.chatWithOpenAI(prompt, context);
+            return this.cleanCodeResponse(response);
+        }
+        return this.localAI.generateTests(code, context);
+    }
+    
+    // Fix errors
+    async fixError(code: string, error: string, fullContext: string): Promise<string> {
+        const prompt = `Fix this error in the code:\n\nError: ${error}\n\nCode:\n${code}\n\nFull context:\n${fullContext}\n\nReturn only the fixed code:`;
         
-        switch (this.config.provider) {
-            case 'openai':
-                return this.getOpenAICompletion(enhancedPrompt);
-            case 'anthropic':
-                return this.getAnthropicCompletion(enhancedPrompt);
-            case 'local':
-                return this.getLocalCompletion(enhancedPrompt);
-            default:
-                return 'Model provider not configured';
+        if (this.shouldUseOpenAI()) {
+            const response = await this.chatWithOpenAI(prompt, '');
+            return this.cleanCodeResponse(response);
+        }
+        
+        const response = await this.localAI.chat(prompt, fullContext);
+        return this.cleanCodeResponse(response);
+    }
+    
+    private shouldUseOpenAI(): boolean {
+        return this.config.provider === 'openai' && 
+               this.config.openaiKey && 
+               this.config.openaiKey !== 'your-openai-key-here';
+    }
+    
+    private async chatWithOpenAI(prompt: string, context: string): Promise<string> {
+        try {
+            const messages = [
+                {
+                    role: 'system',
+                    content: 'You are a helpful AI coding assistant.'
+                }
+            ];
+            
+            if (context) {
+                messages.push({
+                    role: 'system',
+                    content: `Context: ${context}`
+                });
+            }
+            
+            messages.push({
+                role: 'user',
+                content: prompt
+            });
+            
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.config.openaiKey}`
+                },
+                body: JSON.stringify({
+                    model: this.config.model,
+                    messages,
+                    max_tokens: 1000,
+                    temperature: this.config.temperature
+                })
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                if (error instanceof Error) {
+                    throw new Error((error as any)?.error?.message || 'OpenAI API error');
+                }
+                throw new Error('OpenAI API error');
+            }
+            
+            const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+            return data.choices?.[0]?.message?.content || '';
+        } catch (error) {
+            console.error('OpenAI error:', error);
+            // Fallback to local AI
+            return this.localAI.chat(prompt, context);
         }
     }
     
-    private async getOpenAICompletion(prompt: string): Promise<string> {
-        if (!this.config.openaiKey) {
-            const setupKey = await vscode.window.showWarningMessage(
-                'OpenAI API key not found in .env file',
-                'Add Key to .env',
-                'Enter Key Now'
-            );
-            
-            if (setupKey === 'Add Key to .env') {
-                vscode.window.showInformationMessage(
-                    'Add OPENAI_API_KEY=your-key to .env file in project root'
-                );
-                return '';
-            } else if (setupKey === 'Enter Key Now') {
-                const key = await vscode.window.showInputBox({
-                    prompt: 'Enter OpenAI API key (will be saved to .env)',
-                    password: true
-                });
-                if (key) {
-                    await this.saveToEnvFile('OPENAI_API_KEY', key);
-                    this.config.openaiKey = key;
-                }
-            }
-            return '';
-        }
-        
+    private async getOpenAICodeCompletion(prompt: string, maxTokens: number): Promise<string> {
         try {
             const response = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
@@ -96,106 +168,37 @@ export class ModelService {
                     'Authorization': `Bearer ${this.config.openaiKey}`
                 },
                 body: JSON.stringify({
-                    model: this.config.model || 'gpt-3.5-turbo',
+                    model: this.config.codeModel,
                     messages: [
                         {
                             role: 'system',
-                            content: 'You are a helpful coding assistant with access to repository context.'
+                            content: 'You are a code completion assistant. Provide only the code to complete, no explanations or markdown.'
                         },
                         {
                             role: 'user',
                             content: prompt
                         }
                     ],
-                    max_tokens: 500,
-                    temperature: 0.7
+                    max_tokens: maxTokens,
+                    temperature: 0.2,
+                    stop: ['\n\n', '```']
                 })
             });
             
-            if (!response.ok) {
-                const error = await response.json();
-                const errorMessage = (error as any)?.error?.message || 'OpenAI API error';
-                throw new Error(errorMessage);
-            }
-            
-            const data = await response.json() as { choices: { message: { content: string } }[] };
-            return data.choices[0].message.content;
-        } catch (error: any) {
-            console.error('OpenAI error:', error);
-            return `Error: ${error.message}`;
-        }
-    }
-    
-    private async getAnthropicCompletion(prompt: string): Promise<string> {
-        if (!this.config.anthropicKey) {
-            vscode.window.showWarningMessage('Anthropic API key not found in .env file');
+            const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+            return data.choices?.[0]?.message?.content?.trim() || '';
+        } catch (error) {
+            console.error('OpenAI completion error:', error);
             return '';
         }
-        
-        try {
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': this.config.anthropicKey,
-                    'anthropic-version': '2023-06-01'
-                },
-                body: JSON.stringify({
-                    model: 'claude-3-sonnet-20240229',
-                    max_tokens: 500,
-                    messages: [{
-                        role: 'user',
-                        content: prompt
-                    }]
-                })
-            });
-            
-            const data = await response.json() as { content: { text: string }[] };
-            return data.content[0].text;
-        } catch (error: any) {
-            return `Anthropic error: ${error.message}`;
-        }
     }
     
-    private async getLocalCompletion(prompt: string): Promise<string> {
-        try {
-            const response = await fetch(`${this.config.llamaEndpoint}/v1/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    prompt: prompt,
-                    max_tokens: 500,
-                    temperature: 0.7
-                })
-            });
-            
-            const data = await response.json() as { choices?: { text: string }[] };
-            return data.choices?.[0]?.text || 'Local model not responding';
-        } catch {
-            return 'Local model not available. Start llama.cpp server.';
-        }
-    }
-    
-    private async saveToEnvFile(key: string, value: string) {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) return;
-        
-        const envPath = path.join(workspaceFolder.uri.fsPath, '.env');
-        let envContent = '';
-        
-        if (fs.existsSync(envPath)) {
-            envContent = fs.readFileSync(envPath, 'utf8');
-        }
-        
-        // Update or add the key
-        const regex = new RegExp(`^${key}=.*$`, 'gm');
-        if (regex.test(envContent)) {
-            envContent = envContent.replace(regex, `${key}=${value}`);
-        } else {
-            envContent += `\n${key}=${value}`;
-        }
-        
-        fs.writeFileSync(envPath, envContent);
+    private cleanCodeResponse(response: string): string {
+        // Remove markdown code blocks
+        return response
+            .replace(/^```[\w]*\n?/gm, '')
+            .replace(/\n?```$/gm, '')
+            .trim();
     }
     
     async getRepositoryContext(query: string): Promise<string> {
@@ -207,7 +210,7 @@ export class ModelService {
             });
             
             if (response.ok) {
-                const data = await response.json() as { sources?: { timestamp: string; message: string; author: string }[] };
+                const data = await response.json() as { sources?: { timestamp: string, message: string, author: string }[] };
                 if (data.sources && data.sources.length > 0) {
                     return data.sources.map((s: any) => 
                         `[${s.timestamp}] ${s.message} - ${s.author}`
@@ -218,5 +221,19 @@ export class ModelService {
             console.error('Context Keeper error:', error);
         }
         return '';
+    }
+    
+    getCurrentProvider(): string {
+        return this.config.provider;
+    }
+    
+    isOpenAIConfigured(): boolean {
+        return this.shouldUseOpenAI();
+    }
+    
+    async ensureInitialized(): Promise<void> {
+        if (this.config.provider === 'local') {
+            await this.localAI.ensureServerRunning();
+        }
     }
 }

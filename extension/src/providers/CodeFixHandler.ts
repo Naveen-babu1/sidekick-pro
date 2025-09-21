@@ -1,68 +1,39 @@
 import * as vscode from "vscode";
-import { LocalAIProvider } from "./LocalAIProvider";
+import { ModelService } from "../services/modelService";
 
 export class CodeFixHandler {
-  constructor(
-    private localAI: LocalAIProvider,
-    private context: vscode.ExtensionContext
-  ) {}
+  private modelService: ModelService;
+  
+  constructor(private context: vscode.ExtensionContext) {
+    this.modelService = new ModelService(context);
+  }
 
-  async fixError(
-    document: vscode.TextDocument,
-    diagnostic: vscode.Diagnostic
-  ): Promise<void> {
+  async fixError(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document !== document) {
       return;
     }
 
-    // Get FULL file context
     const fullFileContent = document.getText();
     const errorText = document.getText(diagnostic.range);
     const errorLine = diagnostic.range.start.line;
-
-    // Find the containing code block (function, object, etc.)
+    
     const blockRange = this.findContainingBlock(document, errorLine);
     const blockText = document.getText(blockRange);
 
-    // Prepare prompt for AI
-    const prompt = `Fix the errors in this code block:
-
-\`\`\`${document.languageId}
-${blockText}
-\`\`\`
-
-Error: ${diagnostic.message} at line ${errorLine + 1}
-
-Full file context:
-\`\`\`${document.languageId}
-${fullFileContent}
-\`\`\`
-Analyze the entire file context and provide ONLY the fixed code that should replace "${errorText}". Do not include explanations, just the corrected code:`;
-
     try {
-      // Show progress
       const fix = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: "Analyzing error with full context...",
+          title: "Analyzing error with AI...",
           cancellable: false,
         },
         async () => {
-          // Ensure server is running
-          if (!(await this.localAI.checkModelStatus().then((s) => s.isReady))) {
-            await this.localAI.ensureServerRunning();
-          }
-
-          // Get AI fix
-          const response = await this.localAI.chat(prompt, fullFileContent);
-
-          // Clean the response
-          let fixedCode = response
-            .replace(/```[a-z]*\n?/g, "")
-            .replace(/```$/g, "")
-            .trim();
-
+          const fixedCode = await this.modelService.fixError(
+            blockText,
+            diagnostic.message,
+            fullFileContent
+          );
           return fixedCode;
         }
       );
@@ -72,7 +43,6 @@ Analyze the entire file context and provide ONLY the fixed code that should repl
         return;
       }
 
-      // Create a preview panel to show the fix
       this.showFixPreview(editor, blockRange, fix, blockText);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to fix: ${error}`);
