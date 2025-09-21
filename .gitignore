@@ -39,3 +39,4 @@ logs/
 
 # Qdrant data
 qdrant_data/
+.env

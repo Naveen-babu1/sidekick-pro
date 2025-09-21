@@ -1,0 +1,73 @@
+{
+  "name": "sidekick-pro",
+  "displayName": "Sidekick Pro",
+  "description": "AI-powered development assistant",
+  "version": "0.1.0",
+  "publisher": "naveen",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/main.js",
+  "activationEvents": [
+    "onCommand:sidekick.chat.open",
+    "onCommand:sidekick.switchModel",
+    "onCommand:sidekick.search",
+    "onCommand:sidekick.dashboard.open",
+    "onCommand:sidekick.index"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "sidekick.chat.open",
+        "title": "Sidekick Pro: Open Chat"
+      },
+      {
+        "command": "sidekick.switchModel",
+        "title": "Sidekick Pro: Switch Model"
+      },
+      {
+        "command": "sidekick.search",
+        "title": "Sidekick Pro: Search Repository"
+      },
+      {
+        "command": "sidekick.dashboard.open",
+        "title": "Sidekick Pro: Open Dashboard"
+      },
+      {
+        "command": "sidekick.index",
+        "title": "Sidekick Pro: Index Repository"
+      }
+    ],
+    "configuration": {
+      "title": "Sidekick Pro",
+      "properties": {
+        "sidekick-pro.openaiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API Key",
+          "scope": "application"
+        },
+        "sidekick-pro.provider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "local"
+          ],
+          "default": "local",
+          "description": "Model provider",
+          "scope": "application"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "dotenv": "^17.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/vscode": "^1.104.0"
+  }
+}

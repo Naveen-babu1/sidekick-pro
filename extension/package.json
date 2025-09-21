@@ -1,15 +1,19 @@
 {
   "name": "sidekick-pro",
   "displayName": "Sidekick Pro",
-  "description": "AI Development Suite with Repository Memory",
+  "description": "AI-powered development assistant",
   "version": "0.1.0",
-  "publisher": "sidekick-pro",
-  "engines": {"vscode": "^1.74.0"},
-  "categories": ["Other"],
-  "activationEvents": [],
+  "engines": {
+    "vscode": "^1.74.0"
+  },
   "main": "./out/main.js",
+  "activationEvents": [],
   "contributes": {
     "commands": [
+      {
+        "command": "sidekick.chat.open",
+        "title": "Sidekick Pro: Open Chat"
+      },
       {
         "command": "sidekick.search",
         "title": "Sidekick Pro: Search Repository"
@@ -23,21 +27,21 @@
         "title": "Sidekick Pro: Index Repository"
       },
       {
-        "command": "sidekick.chat.open",
-        "title": "Sidekick Pro: Open Chat"
-      },
-      {
-        "command": "sidekick.explain",
-        "title": "Sidekick Pro: Explain Code"
-      },
-      {
-        "command": "sidekick.refactor",
-        "title": "Sidekick Pro: Refactor Code"
-      },
-      {
-        "command": "sidekick.test",
-        "title": "Sidekick Pro: Generate Tests"
+        "command": "sidekick.switchModel",
+        "title": "Sidekick Pro: Switch Model Provider"
       }
     ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^4.9.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.3"
   }
 }
