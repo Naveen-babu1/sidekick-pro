@@ -8,6 +8,7 @@ import { InlineCompletionProvider } from "./providers/InlineCompletionProvider";
 import { CodeFixProvider } from "./providers/CodeFixProvider";
 import { CodeFixHandler } from "./providers/CodeFixHandler";
 import { ModelService } from "./services/modelService";
+import { ChatViewProvider } from "./providers/ChatViewProvider";
 
 // Chat Panel Class - Creates a webview panel on the right side
 class ChatPanel {
@@ -220,7 +221,7 @@ class ChatPanel {
             editor.document.getText(editor.selection) ||
             editor.document.getText();
           const tests = await this.modelService.generateTests(
-            selectedText, 
+            selectedText,
             context,
             editor.document.languageId
           );
@@ -296,7 +297,10 @@ You can also just chat naturally about your code!`;
       "icon.png"
     );
     const iconUri = this._panel.webview.asWebviewUri(iconPath);
-    
+    const aiProvider = this.modelService.isOpenAIConfigured()
+      ? "OpenAI"
+      : "local AI";
+
     return `<!DOCTYPE html>
     <html lang="en">
     <head>
@@ -520,7 +524,7 @@ You can also just chat naturally about your code!`;
             <div class="messages-container" id="messages">
                 <div class="welcome-message" id="welcome">
                     <h2>👋 Welcome to Sidekick AI</h2>
-                    <p>Your local AI coding assistant</p>
+                    <p>Your AI coding assistant powered by ${aiProvider}</p>
                     <div class="quick-actions">
                         <button class="quick-action" onclick="sendMessage('/help')">View Commands</button>
                         <button class="quick-action" onclick="sendMessage('/explain')">Explain Code</button>
@@ -707,6 +711,7 @@ You can also just chat naturally about your code!`;
   }
 }
 
+// Setup wizard function - kept from your original code
 async function runSetupWizard(
   context: vscode.ExtensionContext,
   localAI: LocalAIProvider
@@ -804,17 +809,53 @@ async function runSetupWizard(
 export async function activate(context: vscode.ExtensionContext) {
   console.log("Sidekick AI is starting...");
 
-  const isFirstRun = context.globalState.get("sidekickai.firstRun", true);
-
+  // Initialize services
   const privacyGuard = new PrivacyGuard();
   await privacyGuard.initialize();
 
-  const localAI = new LocalAIProvider(context);
+  // Initialize ModelService FIRST for OpenAI
   const modelService = new ModelService(context);
 
-  if (isFirstRun) {
+  // Check/create .env file for OpenAI configuration
+  const fsSync = require("fs");
+  const envPath = path.join(__dirname, "..", "..", ".env");
+
+  if (!fsSync.existsSync(envPath)) {
+    const defaultEnv = `# Sidekick AI Configuration
+DEFAULT_MODEL_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key-here
+DEFAULT_MODEL_NAME=gpt-3.5-turbo
+CODE_MODEL_NAME=gpt-3.5-turbo
+MODEL_TEMPERATURE=0.7
+`;
+    fsSync.writeFileSync(envPath, defaultEnv);
+
+    const setup = await vscode.window.showInformationMessage(
+      "Please configure your OpenAI API key in the .env file to use AI features.",
+      "Open .env",
+      "Get API Key",
+      "Skip"
+    );
+
+    if (setup === "Open .env") {
+      const doc = await vscode.workspace.openTextDocument(envPath);
+      await vscode.window.showTextDocument(doc);
+    } else if (setup === "Get API Key") {
+      vscode.env.openExternal(
+        vscode.Uri.parse("https://platform.openai.com/api-keys")
+      );
+    }
+  }
+
+  // Initialize LocalAI (but won't be used if OpenAI is configured)
+  const localAI = new LocalAIProvider(context);
+
+  // Check first run
+  const isFirstRun = context.globalState.get("sidekickai.firstRun", true);
+
+  if (isFirstRun && !modelService.isOpenAIConfigured()) {
     const result = await vscode.window.showInformationMessage(
-      "👋 Welcome to Sidekick AI! Your local AI coding assistant needs a quick setup (2 minutes).",
+      "👋 Welcome to Sidekick AI! Your AI coding assistant needs a quick setup (2 minutes).",
       "Start Setup",
       "Watch Tutorial",
       "Skip"
@@ -833,73 +874,112 @@ export async function activate(context: vscode.ExtensionContext) {
     await context.globalState.update("sidekickai.firstRun", false);
   }
 
-  try {
-    await localAI.initialize();
-  } catch (error) {
-    console.error("Failed to initialize LocalAI:", error);
-    const result = await vscode.window.showErrorMessage(
-      "Sidekick AI needs configuration to work. Would you like to set it up now?",
-      "Setup Now",
-      "Open Settings",
-      "Later"
-    );
+  // Skip local AI initialization if using OpenAI
+  if (!modelService.isOpenAIConfigured()) {
+    console.log("OpenAI not configured, initializing LocalAI...");
+    const isFirstRun = context.globalState.get("sidekickai.firstRun", true);
 
-    if (result === "Setup Now") {
-      await runSetupWizard(context, localAI);
-    } else if (result === "Open Settings") {
-      vscode.commands.executeCommand(
-        "workbench.action.openSettings",
-        "sidekick-ai"
+    if (isFirstRun) {
+      const result = await vscode.window.showInformationMessage(
+        "👋 Welcome to Sidekick AI! Your local AI coding assistant needs a quick setup (2 minutes).",
+        "Start Setup",
+        "Watch Tutorial",
+        "Skip"
       );
+
+      if (result === "Start Setup") {
+        await runSetupWizard(context, localAI);
+      } else if (result === "Watch Tutorial") {
+        vscode.env.openExternal(
+          vscode.Uri.parse(
+            "https://marketplace.visualstudio.com/items?itemName=NaveenBabu.sidekick-ai"
+          )
+        );
+      }
+
+      await context.globalState.update("sidekickai.firstRun", false);
     }
+
+    // Try to initialize local AI
+    try {
+      await localAI.initialize();
+    } catch (error) {
+      console.error("Local AI initialization failed:", error);
+      const result = await vscode.window.showErrorMessage(
+        "Failed to initialize local AI. Would you like to configure it now?",
+        "Setup Now",
+        "Open Settings",
+        "Skip"
+      );
+
+      if (result === "Setup Now") {
+        await runSetupWizard(context, localAI);
+      } else if (result === "Open Settings") {
+        vscode.commands.executeCommand(
+          "workbench.action.openSettings",
+          "sidekick-ai"
+        );
+      }
+    }
+  } else {
+    console.log("Using OpenAI - skipping LocalAI initialization completely");
   }
 
-  const modelStatus = await localAI.checkModelStatus();
+  // Initialize indexer
+  const indexer = new CodeIndexer(context);
+  await indexer.indexWorkspace();
 
-  if (!modelStatus.isReady) {
-    const download = await vscode.window.showInformationMessage(
-      "No local AI models found. Would you like to download them now? (Required for offline operation)",
-      "Download Models",
-      "Later"
-    );
-
-    if (download === "Download Models") {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: "Downloading AI Models",
-          cancellable: true,
-        },
-        async (progress, token) => {
-          await localAI.downloadModels(progress, token);
-        }
-      );
-    }
-  }
+  const chatViewProvider = new ChatViewProvider(
+    context.extensionUri,
+    context,
+    modelService, // Pass the ModelService instance
+    indexer,
+    privacyGuard
+  );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "sidekick-ai.explainError",
-      async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
-        const errorMessage = diagnostic.message;
-        const errorCode = document.getText(diagnostic.range);
-
-        const prompt = `Explain this error in simple terms:
-Error: ${errorMessage}
-Code: ${errorCode}
-
-Provide a brief explanation and how to fix it:`;
-
-        try {
-          const explanation = await localAI.chat(prompt, "");
-          vscode.window.showInformationMessage(explanation, { modal: true });
-        } catch (error) {
-          vscode.window.showErrorMessage(`Failed to explain: ${error}`);
-        }
-      }
+    vscode.window.registerWebviewViewProvider(
+      ChatViewProvider.viewType,
+      chatViewProvider
     )
   );
 
+  // Show AI status on startup
+  const aiStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    99
+  );
+
+  function updateAIStatus() {
+    if (modelService.isOpenAIConfigured()) {
+      aiStatusBar.text = "$(cloud) OpenAI";
+      aiStatusBar.tooltip = "Using OpenAI API";
+      aiStatusBar.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.prominentBackground"
+      );
+    } else {
+      aiStatusBar.text = "$(desktop-download) Local AI";
+      aiStatusBar.tooltip = "Using local llama.cpp";
+    }
+    aiStatusBar.command = "sidekick-ai.switchProvider";
+    aiStatusBar.show();
+  }
+
+  updateAIStatus();
+  context.subscriptions.push(aiStatusBar);
+
+  // Show which AI is being used
+  if (modelService.isOpenAIConfigured()) {
+    vscode.window.showInformationMessage(
+      "Sidekick AI ready with OpenAI! Right-click on code for AI features."
+    );
+  } else {
+    vscode.window.showInformationMessage(
+      "Sidekick AI using local model. Configure OpenAI in .env file for better performance."
+    );
+  }
+
+  // Register all command handlers
   const diagnosticCollection =
     vscode.languages.createDiagnosticCollection("sidekick-ai");
 
@@ -914,41 +994,43 @@ Provide a brief explanation and how to fix it:`;
     )
   );
 
+  const codeFixHandler = new CodeFixHandler(context);
+
+  // Register ALL commands
+
+  // Switch provider command
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.switchProvider", async () => {
       const providers = ["OpenAI (Faster)", "Local (Offline)"];
       const selected = await vscode.window.showQuickPick(providers, {
-        placeHolder: "Select AI provider"
+        placeHolder: "Select AI provider",
       });
-      
+
       if (selected) {
         const provider = selected.includes("OpenAI") ? "openai" : "local";
-        
-        const fs = require('fs');
-        const path = require('path');
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const envPath = workspaceFolder ? 
-          path.join(workspaceFolder.uri.fsPath, '.env') :
-          path.join(__dirname, '..', '.env');
-        
-        if (!fs.existsSync(envPath)) {
+
+        if (!fsSync.existsSync(envPath)) {
           const template = `# Sidekick AI Configuration
-OPENAI_API_KEY=your-openai-key-here
 DEFAULT_MODEL_PROVIDER=${provider}
+OPENAI_API_KEY=your-openai-key-here
 DEFAULT_MODEL_NAME=gpt-3.5-turbo
 `;
-          fs.writeFileSync(envPath, template);
+          fsSync.writeFileSync(envPath, template);
         } else {
-          let envContent = fs.readFileSync(envPath, 'utf8');
+          let envContent = fsSync.readFileSync(envPath, "utf8");
           const regex = /^DEFAULT_MODEL_PROVIDER=.*$/gm;
           if (regex.test(envContent)) {
-            envContent = envContent.replace(regex, `DEFAULT_MODEL_PROVIDER=${provider}`);
+            envContent = envContent.replace(
+              regex,
+              `DEFAULT_MODEL_PROVIDER=${provider}`
+            );
           } else {
             envContent += `\nDEFAULT_MODEL_PROVIDER=${provider}`;
           }
-          fs.writeFileSync(envPath, envContent);
+          fsSync.writeFileSync(envPath, envContent);
         }
-        
+
+        updateAIStatus(); // Update the status bar immediately
         vscode.window.showInformationMessage(
           `Switched to ${selected}. Reload window (Ctrl+R) to apply changes.`
         );
@@ -956,7 +1038,7 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     })
   );
 
-  const codeFixHandler = new CodeFixHandler(context);
+  // Fix error command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sidekick-ai.fixError",
@@ -966,112 +1048,267 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     )
   );
 
-  const indexer = new CodeIndexer(context);
-  await indexer.indexWorkspace();
+  // Explain error command
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "sidekick-ai.explainError",
+      async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
+        const errorMessage = diagnostic.message;
+        const errorCode = document.getText(diagnostic.range);
 
+        const prompt = `Explain this error in simple terms:
+Error: ${errorMessage}
+Code: ${errorCode}
+
+Provide a brief explanation and how to fix it:`;
+
+        try {
+          const explanation = await modelService.chat(prompt, "");
+          vscode.window.showInformationMessage(explanation, { modal: true });
+        } catch (error) {
+          vscode.window.showErrorMessage(`Failed to explain: ${error}`);
+        }
+      }
+    )
+  );
+
+  // Open chat command
   let chatPanel: ChatPanel | undefined;
 
   const openChatCommand = vscode.commands.registerCommand(
     "sidekick-ai.openChat",
     () => {
-      ChatPanel.createOrShow(context, localAI, indexer, privacyGuard, modelService);
+      ChatPanel.createOrShow(
+        context,
+        localAI,
+        indexer,
+        privacyGuard,
+        modelService
+      );
       chatPanel = ChatPanel.currentPanel;
     }
   );
 
   context.subscriptions.push(openChatCommand);
 
-  const inlineProvider = new InlineCompletionProvider(
-    context,
-    indexer,
-    privacyGuard
-  );
-  const inlineDisposable =
-    vscode.languages.registerInlineCompletionItemProvider(
-      { pattern: "**/*" },
-      inlineProvider
-    );
+  // Register the explainCode command for right-click context menu
+  // context.subscriptions.push(
+  //   vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
+  //     console.log("Explain Code command triggered");
+  //     const editor = vscode.window.activeTextEditor;
+  //     if (!editor) {
+  //       vscode.window.showWarningMessage(
+  //         "Please open a file and select code to explain"
+  //       );
+  //       return;
+  //     }
 
-  context.subscriptions.push({
-    dispose: () => localAI.dispose(),
-  });
+  //     const selection = editor.selection;
+  //     const selectedText = editor.document.getText(selection);
 
-  // **ADD THIS: Register the explainCode command for right-click context menu**
-  context.subscriptions.push(
-    vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
-      console.log("Explain Code command triggered");
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showWarningMessage("Please open a file and select code to explain");
-        return;
-      }
+  //     if (!selectedText) {
+  //       vscode.window.showInformationMessage("Please select code to explain");
+  //       return;
+  //     }
 
-      const selection = editor.selection;
-      const selectedText = editor.document.getText(selection);
+  //     await vscode.window.withProgress(
+  //       {
+  //         location: vscode.ProgressLocation.Notification,
+  //         title: "Explaining code with AI...",
+  //         cancellable: false,
+  //       },
+  //       async (progress) => {
+  //         try {
+  //           const fileContext = indexer.getContext();
+  //           const languageId = editor.document.languageId;
 
-      if (!selectedText) {
-        vscode.window.showInformationMessage("Please select code to explain");
-        return;
-      }
+  //           const explanation = await modelService.explainCode(
+  //             selectedText,
+  //           indexer.getContext(),
+  //           editor.document.languageId
+  //           );
 
-      // Show progress notification
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: "Explaining code...",
-          cancellable: false
-        },
-        async (progress) => {
-          try {
-            // Get context from the indexer
-            const fileContext = indexer.getContext();
-            const languageId = editor.document.languageId;
-            
-            // Get explanation using ModelService
-            const explanation = await modelService.explainCode(
-              selectedText,
-              fileContext,
-              languageId
-            );
-            
-            // Show the explanation in output channel
-            const outputChannel = vscode.window.createOutputChannel("Sidekick AI - Code Explanation");
-            outputChannel.clear();
-            outputChannel.appendLine("═══════════════════════════════════════");
-            outputChannel.appendLine("📖 CODE EXPLANATION");
-            outputChannel.appendLine("═══════════════════════════════════════");
-            outputChannel.appendLine("");
-            outputChannel.appendLine("Selected Code:");
-            outputChannel.appendLine("```" + languageId);
-            outputChannel.appendLine(selectedText);
-            outputChannel.appendLine("```");
-            outputChannel.appendLine("");
-            outputChannel.appendLine("Explanation:");
-            outputChannel.appendLine(explanation);
-            outputChannel.show();
-            
-            // Also add to chat if it's open
-            if (chatPanel) {
-              chatPanel.addMessage("explain", selectedText, explanation);
-            }
-            
-          } catch (error) {
-            console.error("Error in explainCode:", error);
-            vscode.window.showErrorMessage(
-              `Failed to explain code: ${error instanceof Error ? error.message : 'Unknown error'}`
-            );
-          }
-        }
+  //           // Format explanation as comments
+  //         const commentSymbol = getCommentSymbol(editor.document.languageId);
+  //         const explanationLines = explanation.split('\n');
+  //         const commentedExplanation = explanationLines
+  //           .map(line => `${commentSymbol} ${line}`)
+  //           .join('\n');
+          
+  //         // Add explanation as comments above the selected code
+  //         await editor.edit(editBuilder => {
+  //           const position = new vscode.Position(selection.start.line, 0);
+  //           editBuilder.insert(position, `${commentSymbol} AI Explanation:\n${commentedExplanation}\n`);
+  //         });
+
+  //         vscode.window.showInformationMessage("Explanation added as comments above the code");
+  //         } catch (error) {
+  //           console.error("Error in explainCode:", error);
+  //           vscode.window.showErrorMessage(
+  //             `Failed to explain code: ${
+  //               error instanceof Error ? error.message : "Unknown error"
+  //             }`
+  //           );
+  //         }
+  //       }
+  //     );
+  //   })
+  // );
+
+  // In extension.ts, update the explainCode command to show inline decorations
+
+context.subscriptions.push(
+  vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
+    console.log("Explain Code command triggered");
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage("Please open a file and select code to explain");
+      return;
+    }
+
+    const selection = editor.selection;
+    const selectedText = editor.document.getText(selection);
+
+    if (!selectedText) {
+      vscode.window.showInformationMessage("Please select code to explain");
+      return;
+    }
+
+    // Show loading indicator inline
+    const loadingDecoration = vscode.window.createTextEditorDecorationType({
+      after: {
+        contentText: "  🔄 Getting AI explanation...",
+        color: "rgba(255, 255, 255, 0.5)",
+        fontStyle: "italic",
+      },
+    });
+
+    editor.setDecorations(loadingDecoration, [
+      {
+        range: new vscode.Range(selection.end, selection.end),
+      },
+    ]);
+
+    try {
+      const fileContext = indexer.getContext();
+      const languageId = editor.document.languageId;
+      
+      // Get explanation from ModelService
+      const explanation = await modelService.explainCode(
+        selectedText,
+        fileContext,
+        languageId
       );
-    })
-  );
 
-  // **ADD THIS: Register refactorCode command**
+      // Clear loading decoration
+      editor.setDecorations(loadingDecoration, []);
+      loadingDecoration.dispose();
+
+      // Create inline explanation decoration
+      const explanationDecoration = vscode.window.createTextEditorDecorationType({
+        isWholeLine: false,
+        after: {
+          contentText: "", // We'll use hover for full text
+          textDecoration: "none",
+        },
+        // Highlight the selected code
+        backgroundColor: "rgba(65, 105, 225, 0.1)",
+        border: "1px solid rgba(65, 105, 225, 0.3)",
+        borderRadius: "3px",
+      });
+
+      // Create rich hover content
+      const hoverMessage = new vscode.MarkdownString("", true);
+      hoverMessage.isTrusted = true;
+      hoverMessage.supportHtml = true;
+
+      // Format explanation nicely
+      hoverMessage.appendMarkdown(`### 🤖 AI Explanation\n\n${explanation}\n\n---\n*💡 Tip: Select any code and use Ctrl+Shift+E for explanations*`);
+
+      // Apply decoration with hover
+      const decoration: vscode.DecorationOptions = {
+        range: selection,
+        hoverMessage: hoverMessage,
+        renderOptions: {
+          after: {
+            contentText: ` // AI: ${explanation.split("\n")[0].substring(0, 50)}...`,
+            color: "rgba(106, 153, 85, 0.6)",
+            fontStyle: "italic",
+            margin: "0 0 0 10px",
+          },
+        },
+      };
+
+      editor.setDecorations(explanationDecoration, [decoration]);
+
+      // Auto-clear after 60 seconds
+      setTimeout(() => {
+        editor.setDecorations(explanationDecoration, []);
+        explanationDecoration.dispose();
+      }, 60000);
+
+      // Show notification with options
+      vscode.window.showInformationMessage(
+        "AI explanation added inline. Hover to see full explanation.",
+        "Copy Explanation",
+        "Clear"
+      ).then(action => {
+        if (action === "Copy Explanation") {
+          vscode.env.clipboard.writeText(explanation);
+          vscode.window.showInformationMessage("Explanation copied to clipboard!");
+        } else if (action === "Clear") {
+          editor.setDecorations(explanationDecoration, []);
+          explanationDecoration.dispose();
+        }
+      });
+
+    } catch (error) {
+      // Clear loading decoration on error
+      editor.setDecorations(loadingDecoration, []);
+      loadingDecoration.dispose();
+      
+      console.error("Error in explainCode:", error);
+      vscode.window.showErrorMessage(
+        `Failed to explain code: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  })
+);
+
+//   function getCommentSymbol(languageId: string): string {
+//   const commentSymbols: Record<string, string> = {
+//     javascript: '//',
+//     typescript: '//',
+//     python: '#',
+//     java: '//',
+//     csharp: '//',
+//     cpp: '//',
+//     c: '//',
+//     ruby: '#',
+//     go: '//',
+//     rust: '//',
+//     php: '//',
+//     swift: '//',
+//     kotlin: '//',
+//     html: '<!--',
+//     css: '/*',
+//     sql: '--',
+//     shell: '#',
+//     yaml: '#',
+//     default: '//'
+//   };
+  
+//   return commentSymbols[languageId] || commentSymbols.default;
+// }
+
+  // Register refactorCode command
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.refactorCode", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
-        vscode.window.showWarningMessage("Please open a file and select code to refactor");
+        vscode.window.showWarningMessage(
+          "Please open a file and select code to refactor"
+        );
         return;
       }
 
@@ -1085,8 +1322,9 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
 
       const instruction = await vscode.window.showInputBox({
         prompt: "How would you like to refactor this code?",
-        placeHolder: "e.g., 'make it more efficient', 'add error handling', 'improve naming'",
-        value: "improve this code"
+        placeHolder:
+          "e.g., 'make it more efficient', 'add error handling', 'improve naming'",
+        value: "improve this code",
       });
 
       if (!instruction) return;
@@ -1094,30 +1332,33 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: "Refactoring code...",
-          cancellable: false
+          title: "Refactoring code with AI...",
+          cancellable: false,
         },
         async () => {
           try {
             const fileContext = indexer.getContext();
             const languageId = editor.document.languageId;
-            
+
             const refactoredCode = await modelService.refactorCode(
               selectedText,
               instruction,
               fileContext,
               languageId
             );
-            
-            await editor.edit(editBuilder => {
+
+            await editor.edit((editBuilder) => {
               editBuilder.replace(selection, refactoredCode);
             });
-            
-            vscode.window.showInformationMessage("Code refactored successfully!");
-            
+
+            vscode.window.showInformationMessage(
+              "Code refactored successfully!"
+            );
           } catch (error) {
             vscode.window.showErrorMessage(
-              `Failed to refactor code: ${error instanceof Error ? error.message : 'Unknown error'}`
+              `Failed to refactor code: ${
+                error instanceof Error ? error.message : "Unknown error"
+              }`
             );
           }
         }
@@ -1125,47 +1366,52 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     })
   );
 
-  // **ADD THIS: Register generateTests command**
+  // Register generateTests command
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.generateTests", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
 
       const selection = editor.selection;
-      const selectedText = selection.isEmpty 
+      const selectedText = selection.isEmpty
         ? editor.document.getText()
         : editor.document.getText(selection);
 
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: "Generating tests...",
-          cancellable: false
+          title: "Generating tests with AI...",
+          cancellable: false,
         },
         async () => {
           try {
             const fileContext = indexer.getContext();
             const languageId = editor.document.languageId;
-            
+
             const tests = await modelService.generateTests(
               selectedText,
               fileContext,
               languageId
             );
-            
-            // Create a new file with tests
-            const testFileName = editor.document.fileName.replace(/\.(\w+)$/, '.test.$1');
+
+            const testFileName = editor.document.fileName.replace(
+              /\.(\w+)$/,
+              ".test.$1"
+            );
             const testDoc = await vscode.workspace.openTextDocument({
               content: tests,
-              language: languageId
+              language: languageId,
             });
-            
+
             await vscode.window.showTextDocument(testDoc);
-            vscode.window.showInformationMessage("Tests generated successfully!");
-            
+            vscode.window.showInformationMessage(
+              "Tests generated successfully!"
+            );
           } catch (error) {
             vscode.window.showErrorMessage(
-              `Failed to generate tests: ${error instanceof Error ? error.message : 'Unknown error'}`
+              `Failed to generate tests: ${
+                error instanceof Error ? error.message : "Unknown error"
+              }`
             );
           }
         }
@@ -1173,21 +1419,20 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     })
   );
 
-  // Keep the old explain command for backward compatibility
+  // Backward compatibility commands
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.explain", async () => {
-      // Just call the new explainCode command
       vscode.commands.executeCommand("sidekick-ai.explainCode");
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.refactor", async () => {
-      // Call the new refactorCode command
       vscode.commands.executeCommand("sidekick-ai.refactorCode");
     })
   );
 
+  // Trigger completion command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sidekick-ai.triggerCompletion",
@@ -1199,6 +1444,7 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     )
   );
 
+  // Accepted completion tracking
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sidekick-ai.acceptedCompletion",
@@ -1215,6 +1461,7 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     )
   );
 
+  // Privacy status command
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.privacyStatus", async () => {
       const report = privacyGuard.getPrivacyReport();
@@ -1229,6 +1476,7 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     })
   );
 
+  // Switch model command
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.switchModel", async () => {
       const models = await localAI.getAvailableModels();
@@ -1243,6 +1491,21 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
     })
   );
 
+  // Register inline completion provider
+  const inlineProvider = new InlineCompletionProvider(
+    context,
+    indexer,
+    privacyGuard
+  );
+  const inlineDisposable =
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: "**/*" },
+      inlineProvider
+    );
+
+  context.subscriptions.push(inlineDisposable);
+
+  // Chat status bar
   const chatStatusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100
@@ -1255,102 +1518,100 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
 
   context.subscriptions.push(chatStatusBarItem);
 
+  // Privacy status bar
+  const privacyStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    98
+  );
+  privacyStatusBar.text = "$(shield) Privacy Mode: ON";
+  privacyStatusBar.tooltip =
+    "All AI processing happens locally. Click for privacy report.";
+  privacyStatusBar.command = "sidekick-ai.privacyStatus";
+  privacyStatusBar.show();
+
+  context.subscriptions.push(privacyStatusBar);
+
+  // Register hover provider
   const hoverProvider = vscode.languages.registerHoverProvider(
     { pattern: "**/*" },
     {
       async provideHover(document, position, token) {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) return;
-
-        const selection = editor.selection;
-
-        if (selection.isEmpty || !selection.contains(position)) {
-          return;
+        // Use ModelService instead of LocalAI directly
+        try {
+          const range = document.getWordRangeAtPosition(position);
+          const selectedText = range ? document.getText(range) : "";
+          const explanation = await modelService.explainCode(
+            selectedText,
+            "",
+            document.languageId
+          );
+          // ... rest of hover logic
+        } catch (error) {
+          console.error("Failed to explain code:", error);
+          return null;
         }
-
-        const selectedText = document.getText(selection);
-
-        const explanation = await localAI.explainCode(
-          selectedText,
-          indexer.getContext()
-        );
-
-        const markdown = new vscode.MarkdownString();
-        markdown.isTrusted = true;
-        markdown.supportHtml = true;
-        markdown.appendMarkdown(`### 🤖 AI Explanation\n\n${explanation}`);
-
-        return new vscode.Hover(markdown, selection);
       },
     }
   );
 
   context.subscriptions.push(hoverProvider);
 
-  const statusBarItem = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    100
-  );
-  statusBarItem.text = "$(shield) Privacy Mode: ON";
-  statusBarItem.tooltip =
-    "All AI processing happens locally. Click for privacy report.";
-  statusBarItem.command = "sidekick-ai.privacyStatus";
-  statusBarItem.show();
-
-  context.subscriptions.push(inlineDisposable, statusBarItem);
-
+  // File watcher
   const watcher = vscode.workspace.createFileSystemWatcher("**/*");
   watcher.onDidCreate((uri) => indexer.indexFile(uri));
   watcher.onDidChange((uri) => indexer.updateFile(uri));
   watcher.onDidDelete((uri) => indexer.removeFile(uri));
 
   context.subscriptions.push(watcher);
+
+  // Dispose handler
+  context.subscriptions.push({
+    dispose: () => localAI.dispose(),
+  });
 }
 
 function getPrivacyReportHtml(report: any): string {
   return `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body { font-family: var(--vscode-font-family); padding: 20px; }
-                .status { color: #4CAF50; font-weight: bold; }
-                .metric { margin: 10px 0; padding: 10px; background: var(--vscode-editor-background); }
-                h2 { color: var(--vscode-foreground); }
-            </style>
-        </head>
-        <body>
-            <h1>🔒 Privacy Status Report</h1>
-            <div class="status">✓ All processing is local</div>
-            
-            <h2>Session Statistics</h2>
-            <div class="metric">Network Requests Blocked: ${
-              report.blockedRequests
-            }</div>
-            <div class="metric">Local Inferences: ${
-              report.localInferences
-            }</div>
-            <div class="metric">Data Processed Locally: ${
-              report.dataProcessed
-            }</div>
-            <div class="metric">Active Model: ${report.activeModel}</div>
-            
-            <h2>Security Settings</h2>
-            <div class="metric">Telemetry: DISABLED</div>
-            <div class="metric">External APIs: BLOCKED</div>
-            <div class="metric">Code Sanitization: ENABLED</div>
-            <div class="metric">Local Models Only: ENFORCED</div>
-            
-            <h2>Indexed Files</h2>
-            <div class="metric">Total Files: ${report.indexedFiles}</div>
-            <div class="metric">Excluded Patterns: ${report.excludedPatterns.join(
-              ", "
-            )}</div>
-        </body>
-        </html>
-    `;
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body { font-family: var(--vscode-font-family); padding: 20px; }
+            .status { color: #4CAF50; font-weight: bold; }
+            .metric { margin: 10px 0; padding: 10px; background: var(--vscode-editor-background); }
+            h2 { color: var(--vscode-foreground); }
+        </style>
+    </head>
+    <body>
+        <h1>🔒 Privacy Status Report</h1>
+        <div class="status">✓ All processing is local</div>
+        
+        <h2>Session Statistics</h2>
+        <div class="metric">Network Requests Blocked: ${
+          report.blockedRequests
+        }</div>
+        <div class="metric">Local Inferences: ${report.localInferences}</div>
+        <div class="metric">Data Processed Locally: ${
+          report.dataProcessed
+        }</div>
+        <div class="metric">Active Model: ${report.activeModel}</div>
+        
+        <h2>Security Settings</h2>
+        <div class="metric">Telemetry: DISABLED</div>
+        <div class="metric">External APIs: BLOCKED</div>
+        <div class="metric">Code Sanitization: ENABLED</div>
+        <div class="metric">Local Models Only: ENFORCED</div>
+        
+        <h2>Indexed Files</h2>
+        <div class="metric">Total Files: ${report.indexedFiles}</div>
+        <div class="metric">Excluded Patterns: ${report.excludedPatterns.join(
+          ", "
+        )}</div>
+    </body>
+    </html>
+  `;
 }
 
 export function deactivate() {
-  console.log("Privacy-First Copilot deactivated");
+  console.log("Sidekick AI deactivated");
 }

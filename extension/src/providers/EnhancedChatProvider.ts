@@ -138,7 +138,8 @@ export class EnhancedChatProvider {
             case '/explain':
                 if (editor && !editor.selection.isEmpty) {
                     const code = editor.document.getText(editor.selection);
-                    response = await this.modelService.explainCode(code, context);
+                    const languageId = editor.document.languageId;
+                    response = await this.modelService.explainCode(code, context, languageId);
                 } else {
                     response = 'Please select some code first.';
                 }

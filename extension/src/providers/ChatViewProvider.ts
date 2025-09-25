@@ -20,12 +20,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private context: vscode.ExtensionContext,
-    private localAI: LocalAIProvider,
+    modelService: ModelService,
     private indexer: CodeIndexer,
     private privacyGuard: PrivacyGuard
   ) {
     // Load chat history from storage
-    this.modelService = new ModelService(context);
+    this.modelService = modelService;
     this.loadChatHistory();
   }
 
@@ -182,13 +182,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let response = "";
     let code = "";
+    const editor = vscode.window.activeTextEditor;
 
     switch (cmd) {
       case "/explain":
-        const editor = vscode.window.activeTextEditor;
         if (editor && !editor.selection.isEmpty) {
           const selectedCode = editor.document.getText(editor.selection);
-          response = await this.localAI.explainCode(selectedCode, context);
+          if (this.modelService) {
+            response = await this.modelService.explainCode(selectedCode, context, editor.document.languageId);
+          } else {
+            throw new Error("ModelService is not initialized.");
+          }
         } else {
           response = "Please select some code to explain.";
         }
@@ -197,11 +201,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "/refactor":
         if (editor && !editor.selection.isEmpty) {
           const selectedCode = editor.document.getText(editor.selection);
-          code = await this.localAI.refactorCode(
-            selectedCode,
-            arg || "improve this code",
-            context
-          );
+          if (this.modelService) {
+            if (this.modelService) {
+              code = await this.modelService.refactorCode(
+                selectedCode,
+                arg || "improve this code",
+                context,
+                editor.document.languageId
+              );
+            } else {
+              throw new Error("ModelService is not initialized.");
+            }
+          } else {
+            throw new Error("ModelService is not initialized.");
+          }
           response = `Here's the refactored code:\n\n\`\`\`javascript\n${code}\n\`\`\``;
         } else {
           response = "Please select some code to refactor.";
@@ -211,7 +224,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "/test":
         if (editor && !editor.selection.isEmpty) {
           const selectedCode = editor.document.getText(editor.selection);
-          code = await this.localAI.generateTests(selectedCode, context);
+          if (this.modelService) {
+            code = await this.modelService.generateTests(selectedCode, context, editor.document.languageId);
+          } else {
+            throw new Error("ModelService is not initialized.");
+          }
           response = `Here are the tests:\n\n\`\`\`javascript\n${code}\n\`\`\``;
         } else {
           response = "Please select a function to generate tests.";
@@ -228,11 +245,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const errorLine = editor.document.lineAt(
               error.range.start.line
             ).text;
-            code = await this.localAI.refactorCode(
-              errorLine,
-              `fix this error: ${error.message}`,
-              context
-            );
+            if (this.modelService) {
+              code = await this.modelService.refactorCode(
+                errorLine,
+                `fix this error: ${error.message}`,
+                context,
+                editor.document.languageId
+              );
+            } else {
+              throw new Error("ModelService is not initialized.");
+            }
             response = `Here's the fix:\n\n\`\`\`javascript\n${code}\n\`\`\``;
           } else {
             response = "No errors found in the current file.";

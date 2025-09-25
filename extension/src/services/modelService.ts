@@ -7,20 +7,29 @@ import { LocalAIProvider } from '../providers/LocalAIProvider';
 
 export class ModelService {
     private config: any = {};
-    private localAI: LocalAIProvider;
+    private localAI: LocalAIProvider | null = null;
     private contextKeeperUrl: string = '';
+    private currentProvider: 'openai' | 'local' = 'local';
     
     constructor(private context: vscode.ExtensionContext) {
+        this.context = context;
         this.loadEnvironment();
-        this.localAI = new LocalAIProvider(context);
+        // this.loadConfiguration();
+        
+        // Only initialize LocalAI if not using OpenAI
+        // if (!this.isOpenAIConfigured()) {
+        //     this.localAI = new LocalAIProvider(context);
+        // }
     }
     
     private loadEnvironment() {
         // Load .env from workspace or project root
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         const envPaths = [
+            path.join(__dirname, '..', '..', '.env'),  // Check project root first
+            path.join(__dirname, '..', '..', '..', '.env'),  // One more level up
+            'd:/projects/sidekick-pro/.env',  // Direct path
             workspaceFolder ? path.join(workspaceFolder.uri.fsPath, '.env') : null,
-            path.join(__dirname, '..', '..', '.env'),
             path.join(process.cwd(), '.env')
         ].filter(p => p !== null);
         
@@ -28,6 +37,7 @@ export class ModelService {
             if (envPath && fs.existsSync(envPath)) {
                 const envConfig = dotenv.parse(fs.readFileSync(envPath));
                 Object.assign(process.env, envConfig);
+                console.log(`Loaded .env from: ${envPath}`);
                 break;
             }
         }
@@ -39,51 +49,67 @@ export class ModelService {
             codeModel: process.env.CODE_MODEL_NAME || 'gpt-3.5-turbo',
             temperature: parseFloat(process.env.MODEL_TEMPERATURE || '0.7')
         };
-        
-        this.contextKeeperUrl = process.env.CONTEXT_KEEPER_URL || 'http://localhost:8000';
+        console.log(`Model provider: ${this.config.provider}`);
+        console.log(`OpenAI configured: ${this.isOpenAIConfigured()}`);
+        // this.contextKeeperUrl = process.env.CONTEXT_KEEPER_URL || 'http://localhost:8000';
     }
+
+    isOpenAIConfigured(): boolean {
+        return this.config.provider === 'openai' && 
+               this.config.openaiKey && 
+               this.config.openaiKey !== 'your-openai-api-key-here' &&
+               this.config.openaiKey.startsWith('sk-');
+    }
+
+    // Removed duplicate implementation of isOpenAIConfigured
     
     // Main chat method - add optional languageId
-    async chat(message: string, context: string, languageId?: string): Promise<string> {
-        if (this.shouldUseOpenAI()) {
-            return this.chatWithOpenAI(message, context);
+    async chat(message: string, context: string): Promise<string> {
+        if (this.isOpenAIConfigured()) {
+            return await this.chatWithOpenAI(message, context);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            return await this.localAI.chat(message, context);
         }
-        return this.localAI.chat(message, context);
     }
     
-    // Code completion - add languageId parameter
+    // Code completion
     async generateCompletion(prompt: string, context: string, maxTokens: number = 150, languageId?: string): Promise<string> {
-        if (this.shouldUseOpenAI()) {
-            return this.getOpenAICodeCompletion(prompt, maxTokens);
+        if (this.isOpenAIConfigured()) {
+            return await this.getOpenAICodeCompletion(prompt, maxTokens);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            return await this.localAI.generateCompletion(prompt, context, maxTokens);
         }
-        return this.localAI.generateCompletion(prompt, context, maxTokens, languageId);
     }
     
     // Explain code - already has languageId
-    async explainCode(code: string, context: string, languageId?: string): Promise<string> {
-        try {
-            if (this.shouldUseOpenAI()) {
+    async explainCode(code: string, context: string, languageId: string): Promise<string> {
+        if (this.isOpenAIConfigured()) {
+            try {
+                console.log('Using OpenAI for code explanation');
                 return await this.explainWithOpenAI(code, context, languageId);
-            } else {
-                return await this.localAI.explainCode(code, context, languageId);
+            } catch (error) {
+                console.error('OpenAI failed:', error);
+                throw error; // Don't fall back to local if OpenAI is configured
             }
-        } catch (error) {
-            console.error('Error explaining code:', error);
-            return await this.localAI.explainCode(code, context, languageId);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            return await this.localAI.explainCode(code, context);
         }
     }
     
-    private async explainWithOpenAI(code: string, context: string, languageId?: string): Promise<string> {
-        const messages = [
-            {
-                role: "system",
-                content: "You are an expert code reviewer. Explain the following code clearly and concisely."
-            },
-            {
-                role: "user",
-                content: `${context ? `Context: ${context}\n\n` : ''}${languageId ? `Language: ${languageId}\n\n` : ''}Code to explain:\n\`\`\`\n${code}\n\`\`\``
-            }
-        ];
+    private async explainWithOpenAI(code: string, context: string, languageId: string): Promise<string> {
+        const prompt = `Explain the following ${languageId} code in detail:\n\n${code}\n\nContext: ${context}`;
         
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
@@ -93,14 +119,30 @@ export class ModelService {
             },
             body: JSON.stringify({
                 model: this.config.model,
-                messages: messages,
-                temperature: 0.3,
-                max_tokens: 500
+                messages: [
+                    {
+                        role: 'system',
+                        content: `You are an expert ${languageId} developer. Explain the following code clearly and concisely. 
+                         Focus on:
+                         1. What the code does
+                         2. Its purpose and main functionality
+                         3. Key patterns or techniques used
+                         4. Any important details or edge cases
+                         Keep the explanation clear but comprehensive.`
+                    },
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                max_tokens: 500,
+                temperature: this.config.temperature
             })
         });
         
         if (!response.ok) {
-            throw new Error(`OpenAI API error: ${response.status}`);
+            const error = await response.text();
+            throw new Error(`OpenAI API error: ${error}`);
         }
         
         const data = await response.json() as { choices: { message: { content: string } }[] };
@@ -109,94 +151,89 @@ export class ModelService {
     
     // Refactor code - fix parameter order and add languageId
     async refactorCode(code: string, instruction: string, context: string, languageId?: string): Promise<string> {
-        if (this.shouldUseOpenAI()) {
-            const prompt = `Refactor this ${languageId || 'code'}${instruction ? ` to ${instruction}` : ''}:\n\n${code}\n\nReturn only the refactored code:`;
+        if (this.isOpenAIConfigured()) {
+            const prompt = `Refactor this ${languageId || 'code'}${instruction ? ` to ${instruction}` : ''}:\n\n${code}\n\nReturn only the refactored code without any markdown or explanations:`;
             const response = await this.chatWithOpenAI(prompt, context);
             return this.cleanCodeResponse(response);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            return await this.localAI.refactorCode(code, instruction, context, languageId);
         }
-        return this.localAI.refactorCode(code, instruction, context, languageId);
     }
     
     // Generate tests - add languageId parameter
     async generateTests(code: string, context: string, languageId?: string): Promise<string> {
-        if (this.shouldUseOpenAI()) {
+        if (this.isOpenAIConfigured()) {
             const testFramework = this.getTestFramework(languageId || 'javascript');
-            const prompt = `Generate comprehensive unit tests using ${testFramework} for this ${languageId || 'code'}:\n\n${code}\n\nProvide complete test code:`;
+            const prompt = `Generate comprehensive unit tests using ${testFramework} for this ${languageId || 'code'}:\n\n${code}\n\nProvide complete test code without markdown formatting:`;
             const response = await this.chatWithOpenAI(prompt, context);
             return this.cleanCodeResponse(response);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            return await this.localAI.generateTests(code, context);
         }
-        return this.localAI.generateTests(code, context, languageId);
     }
     
     // Fix errors - add languageId parameter
     async fixError(code: string, error: string, fullContext: string, languageId?: string): Promise<string> {
-        const prompt = `Fix this error in the ${languageId || 'code'}:\n\nError: ${error}\n\nCode:\n${code}\n\nFull context:\n${fullContext}\n\nReturn only the fixed code:`;
+        const prompt = `Fix this error in the ${languageId || 'code'}:\n\nError: ${error}\n\nCode:\n${code}\n\nReturn only the fixed code without markdown or explanations:`;
         
-        if (this.shouldUseOpenAI()) {
-            const response = await this.chatWithOpenAI(prompt, '');
+        if (this.isOpenAIConfigured()) {
+            const response = await this.chatWithOpenAI(prompt, fullContext);
+            return this.cleanCodeResponse(response);
+        } else {
+            if (!this.localAI) {
+                this.localAI = new LocalAIProvider(this.context);
+                await this.localAI.initialize();
+            }
+            const response = await this.localAI.chat(prompt, fullContext);
             return this.cleanCodeResponse(response);
         }
+    }
+    
+    // private shouldUseOpenAI(): boolean {
+    //     return this.config.provider === 'openai' && 
+    //            this.config.openaiKey && 
+    //            this.config.openaiKey !== 'your-openai-key-here';
+    // }
+    
+    private async chatWithOpenAI(message: string, context: string): Promise<string> {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.config.openaiKey}`
+            },
+            body: JSON.stringify({
+                model: this.config.model,
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You are a helpful coding assistant.'
+                    },
+                    {
+                        role: 'user',
+                        content: context ? `${context}\n\n${message}` : message
+                    }
+                ],
+                max_tokens: 1000,
+                temperature: this.config.temperature
+            })
+        });
         
-        const response = await this.localAI.chat(prompt, fullContext);
-        return this.cleanCodeResponse(response);
-    }
-    
-    private shouldUseOpenAI(): boolean {
-        return this.config.provider === 'openai' && 
-               this.config.openaiKey && 
-               this.config.openaiKey !== 'your-openai-key-here';
-    }
-    
-    private async chatWithOpenAI(prompt: string, context: string): Promise<string> {
-        try {
-            const messages = [
-                {
-                    role: 'system',
-                    content: 'You are a helpful AI coding assistant.'
-                }
-            ];
-            
-            if (context) {
-                messages.push({
-                    role: 'system',
-                    content: `Context: ${context}`
-                });
-            }
-            
-            messages.push({
-                role: 'user',
-                content: prompt
-            });
-            
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.config.openaiKey}`
-                },
-                body: JSON.stringify({
-                    model: this.config.model,
-                    messages,
-                    max_tokens: 1000,
-                    temperature: this.config.temperature
-                })
-            });
-            
-            if (!response.ok) {
-                const error = await response.json();
-                if (error instanceof Error) {
-                    throw new Error((error as any)?.error?.message || 'OpenAI API error');
-                }
-                throw new Error('OpenAI API error');
-            }
-            
-            const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-            return data.choices?.[0]?.message?.content || '';
-        } catch (error) {
-            console.error('OpenAI error:', error);
-            // Fallback to local AI
-            return this.localAI.chat(prompt, context);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`OpenAI API error: ${errorText}`);
         }
+        
+        const data = await response.json() as { choices: { message: { content: string } }[] };
+        return data.choices[0].message.content;
     }
     
     private async getOpenAICodeCompletion(prompt: string, maxTokens: number): Promise<string> {
@@ -224,6 +261,10 @@ export class ModelService {
                     stop: ['\n\n', '```']
                 })
             });
+            
+            if (!response.ok) {
+                throw new Error(`OpenAI API error: ${response.statusText}`);
+            }
             
             const data = await response.json() as { choices?: { message?: { content?: string } }[] };
             return data.choices?.[0]?.message?.content?.trim() || '';
@@ -267,12 +308,15 @@ export class ModelService {
         return this.config.provider;
     }
     
-    isOpenAIConfigured(): boolean {
-        return this.shouldUseOpenAI();
-    }
+    // isOpenAIConfigured(): boolean {
+    //     return this.config.provider === 'openai' && 
+    //            this.config.openaiKey && 
+    //            this.config.openaiKey !== 'your-openai-api-key-here' &&
+    //            this.config.openaiKey.startsWith('sk-');
+    // }
     
     async ensureInitialized(): Promise<void> {
-        if (this.config.provider === 'local') {
+        if (!this.isOpenAIConfigured() && this.localAI) {
             await this.localAI.ensureServerRunning();
         }
     }

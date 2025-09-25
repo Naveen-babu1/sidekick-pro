@@ -5,6 +5,12 @@ export class PrivacyGuard {
     private blockedRequests = 0;
     private localInferences = 0;
     private dataProcessed = 0;
+    private allowedDomains = [
+        '127.0.0.1',
+        'localhost',
+        'api.openai.com',  // Add OpenAI API
+        'platform.openai.com'  // Add OpenAI platform
+    ];
     private sensitivePatterns: RegExp[] = [
         /api[_-]?key/gi,
         /secret/gi,
@@ -18,22 +24,69 @@ export class PrivacyGuard {
     ];
     
     async initialize() {
-        // Block all external network requests
-        this.setupNetworkInterceptor();
+        const originalFetch = global.fetch;
         
-        // Initialize secure storage
-        await this.initializeSecureStorage();
+        global.fetch = async (input: any | URL, init?: RequestInit) => {
+            const url = typeof input === 'string' ? input : input.toString();
+            // Check if URL is allowed
+            const isAllowed = this.allowedDomains.some(domain => url.includes(domain));
+            
+            if (isAllowed) {
+                return originalFetch(input, init);
+            }
+            
+            // Block everything else
+            console.warn(`Privacy Guard: Blocked external request to ${url}`);
+            throw new Error('External network request blocked by Privacy Guard');
+        };
+        
+        console.log('Privacy Guard initialized - OpenAI API allowed');
     }
     
     private setupNetworkInterceptor() {
-        // This would be more complex in production, but for POC:
         const originalFetch = global.fetch;
         global.fetch = async (input: any, init?: any) => {
             const url = typeof input === 'string' ? input : input.url;
             
-            // Only allow localhost (Ollama)
-            if (!url.includes('localhost') && !url.includes('127.0.0.1')) {
+            // Check if URL is in allowed list
+            const isAllowed = this.allowedDomains.some(domain => 
+                url.includes(domain)
+            );
+            
+            if (!isAllowed) {
+                // Check if we're using OpenAI and should allow it
+                const config = vscode.workspace.getConfiguration('sidekick-ai');
+                const fs = require('fs');
+                const path = require('path');
+                
+                // Check multiple possible .env locations
+                const possibleEnvPaths = [
+                    path.join(__dirname, '..', '..', '.env'),
+                    path.join(__dirname, '..', '..', '..', '.env'),
+                    path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', '.env'),
+                    'd:/projects/sidekick-pro/.env'
+                ];
+                
+                let usingOpenAI = false;
+                for (const envPath of possibleEnvPaths) {
+                    if (fs.existsSync(envPath)) {
+                        const envContent = fs.readFileSync(envPath, 'utf8');
+                        if (envContent.includes('DEFAULT_MODEL_PROVIDER=openai') && 
+                            envContent.includes('OPENAI_API_KEY=sk-')) {
+                            usingOpenAI = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // If using OpenAI and the request is to OpenAI, allow it
+                if (usingOpenAI && url.includes('api.openai.com')) {
+                    return originalFetch(input, init);
+                }
+                
+                // Otherwise block the request
                 this.blockedRequests++;
+                console.log('Privacy Guard blocked request to:', url);
                 throw new Error('External network request blocked by Privacy Guard');
             }
             
@@ -95,11 +148,32 @@ export class PrivacyGuard {
     }
     
     getPrivacyReport() {
+        // Check what model is actually being used
+        const fs = require('fs');
+        const path = require('path');
+        let activeModel = 'deepseek-coder:6.7b (local)';
+        
+        const possibleEnvPaths = [
+            path.join(__dirname, '..', '..', '.env'),
+            path.join(__dirname, '..', '..', '..', '.env'),
+            'd:/projects/sidekick-pro/.env'
+        ];
+        
+        for (const envPath of possibleEnvPaths) {
+            if (fs.existsSync(envPath)) {
+                const envContent = fs.readFileSync(envPath, 'utf8');
+                if (envContent.includes('DEFAULT_MODEL_PROVIDER=openai')) {
+                    activeModel = 'OpenAI GPT-3.5-turbo';
+                    break;
+                }
+            }
+        }
+        
         return {
             blockedRequests: this.blockedRequests,
             localInferences: this.localInferences,
             dataProcessed: `${(this.dataProcessed / 1024).toFixed(2)} KB`,
-            activeModel: 'deepseek-coder:6.7b (local)',
+            activeModel: activeModel,
             indexedFiles: 0,  // Will be updated by indexer
             excludedPatterns: [
                 'node_modules/**',
