@@ -246,7 +246,65 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Temperature for completion generation (0 = deterministic, 1 = creative)"
+        },
+        "sidekickPro.completion.debounceDelay": {
+          "type": "number",
+          "default": 800,
+          "minimum": 300,
+          "maximum": 2000,
+          "description": "Delay in milliseconds before triggering completion after typing stops"
+        },
+        "sidekickPro.completion.minCharacters": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Minimum number of characters before triggering completions"
+        },
+        "sidekickPro.completion.maxRequestsPerMinute": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "maximum": 60,
+          "description": "Maximum API requests per minute (rate limiting)"
+        },
+        "sidekickPro.completion.cacheTimeout": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 10000,
+          "maximum": 300000,
+          "description": "Cache timeout in milliseconds (default: 1 minute)"
+        },
+        "sidekickPro.completion.enableQuickPatterns": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use quick pattern matching for common code structures"
+        },
+        "sidekickPro.completion.skipComments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip completions when typing comments"
+        },
+        "sidekickPro.completion.skipStrings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip completions when typing inside strings"
+        },
+        "sidekickPro.completion.requestTimeout": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 5000,
+          "description": "Timeout for API requests in milliseconds"
+        },
+        "sidekickPro.completion.contextLines": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Number of context lines to send with completion requests"
         }
+        
       }
     }
   },

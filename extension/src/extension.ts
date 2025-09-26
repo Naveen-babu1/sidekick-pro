@@ -1134,7 +1134,7 @@ Provide a brief explanation and how to fix it:`;
   //         const commentedExplanation = explanationLines
   //           .map(line => `${commentSymbol} ${line}`)
   //           .join('\n');
-          
+
   //         // Add explanation as comments above the selected code
   //         await editor.edit(editBuilder => {
   //           const position = new vscode.Position(selection.start.line, 0);
@@ -1157,149 +1157,161 @@ Provide a brief explanation and how to fix it:`;
 
   // In extension.ts, update the explainCode command to show inline decorations
 
-context.subscriptions.push(
-  vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
-    console.log("Explain Code command triggered");
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage("Please open a file and select code to explain");
-      return;
-    }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
+      console.log("Explain Code command triggered");
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage(
+          "Please open a file and select code to explain"
+        );
+        return;
+      }
 
-    const selection = editor.selection;
-    const selectedText = editor.document.getText(selection);
+      const selection = editor.selection;
+      const selectedText = editor.document.getText(selection);
 
-    if (!selectedText) {
-      vscode.window.showInformationMessage("Please select code to explain");
-      return;
-    }
+      if (!selectedText) {
+        vscode.window.showInformationMessage("Please select code to explain");
+        return;
+      }
 
-    // Show loading indicator inline
-    const loadingDecoration = vscode.window.createTextEditorDecorationType({
-      after: {
-        contentText: "  🔄 Getting AI explanation...",
-        color: "rgba(255, 255, 255, 0.5)",
-        fontStyle: "italic",
-      },
-    });
-
-    editor.setDecorations(loadingDecoration, [
-      {
-        range: new vscode.Range(selection.end, selection.end),
-      },
-    ]);
-
-    try {
-      const fileContext = indexer.getContext();
-      const languageId = editor.document.languageId;
-      
-      // Get explanation from ModelService
-      const explanation = await modelService.explainCode(
-        selectedText,
-        fileContext,
-        languageId
-      );
-
-      // Clear loading decoration
-      editor.setDecorations(loadingDecoration, []);
-      loadingDecoration.dispose();
-
-      // Create inline explanation decoration
-      const explanationDecoration = vscode.window.createTextEditorDecorationType({
-        isWholeLine: false,
+      // Show loading indicator inline
+      const loadingDecoration = vscode.window.createTextEditorDecorationType({
         after: {
-          contentText: "", // We'll use hover for full text
-          textDecoration: "none",
+          contentText: "  🔄 Getting AI explanation...",
+          color: "rgba(255, 255, 255, 0.5)",
+          fontStyle: "italic",
         },
-        // Highlight the selected code
-        backgroundColor: "rgba(65, 105, 225, 0.1)",
-        border: "1px solid rgba(65, 105, 225, 0.3)",
-        borderRadius: "3px",
       });
 
-      // Create rich hover content
-      const hoverMessage = new vscode.MarkdownString("", true);
-      hoverMessage.isTrusted = true;
-      hoverMessage.supportHtml = true;
-
-      // Format explanation nicely
-      hoverMessage.appendMarkdown(`### 🤖 AI Explanation\n\n${explanation}\n\n---\n*💡 Tip: Select any code and use Ctrl+Shift+E for explanations*`);
-
-      // Apply decoration with hover
-      const decoration: vscode.DecorationOptions = {
-        range: selection,
-        hoverMessage: hoverMessage,
-        renderOptions: {
-          after: {
-            contentText: ` // AI: ${explanation.split("\n")[0].substring(0, 50)}...`,
-            color: "rgba(106, 153, 85, 0.6)",
-            fontStyle: "italic",
-            margin: "0 0 0 10px",
-          },
+      editor.setDecorations(loadingDecoration, [
+        {
+          range: new vscode.Range(selection.end, selection.end),
         },
-      };
+      ]);
 
-      editor.setDecorations(explanationDecoration, [decoration]);
+      try {
+        const fileContext = indexer.getContext();
+        const languageId = editor.document.languageId;
 
-      // Auto-clear after 60 seconds
-      setTimeout(() => {
-        editor.setDecorations(explanationDecoration, []);
-        explanationDecoration.dispose();
-      }, 60000);
+        // Get explanation from ModelService
+        const explanation = await modelService.explainCode(
+          selectedText,
+          fileContext,
+          languageId
+        );
 
-      // Show notification with options
-      vscode.window.showInformationMessage(
-        "AI explanation added inline. Hover to see full explanation.",
-        "Copy Explanation",
-        "Clear"
-      ).then(action => {
-        if (action === "Copy Explanation") {
-          vscode.env.clipboard.writeText(explanation);
-          vscode.window.showInformationMessage("Explanation copied to clipboard!");
-        } else if (action === "Clear") {
+        // Clear loading decoration
+        editor.setDecorations(loadingDecoration, []);
+        loadingDecoration.dispose();
+
+        // Create inline explanation decoration
+        const explanationDecoration =
+          vscode.window.createTextEditorDecorationType({
+            isWholeLine: false,
+            after: {
+              contentText: "", // We'll use hover for full text
+              textDecoration: "none",
+            },
+            // Highlight the selected code
+            backgroundColor: "rgba(65, 105, 225, 0.1)",
+            border: "1px solid rgba(65, 105, 225, 0.3)",
+            borderRadius: "3px",
+          });
+
+        // Create rich hover content
+        const hoverMessage = new vscode.MarkdownString("", true);
+        hoverMessage.isTrusted = true;
+        hoverMessage.supportHtml = true;
+
+        // Format explanation nicely
+        hoverMessage.appendMarkdown(
+          `### 🤖 AI Explanation\n\n${explanation}\n\n---\n*💡 Tip: Select any code and use Ctrl+Shift+E for explanations*`
+        );
+
+        // Apply decoration with hover
+        const decoration: vscode.DecorationOptions = {
+          range: selection,
+          hoverMessage: hoverMessage,
+          renderOptions: {
+            after: {
+              contentText: ` // AI: ${explanation
+                .split("\n")[0]
+                .substring(0, 50)}...`,
+              color: "rgba(106, 153, 85, 0.6)",
+              fontStyle: "italic",
+              margin: "0 0 0 10px",
+            },
+          },
+        };
+
+        editor.setDecorations(explanationDecoration, [decoration]);
+
+        // Auto-clear after 60 seconds
+        setTimeout(() => {
           editor.setDecorations(explanationDecoration, []);
           explanationDecoration.dispose();
-        }
-      });
+        }, 60000);
 
-    } catch (error) {
-      // Clear loading decoration on error
-      editor.setDecorations(loadingDecoration, []);
-      loadingDecoration.dispose();
-      
-      console.error("Error in explainCode:", error);
-      vscode.window.showErrorMessage(
-        `Failed to explain code: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
-    }
-  })
-);
+        // Show notification with options
+        vscode.window
+          .showInformationMessage(
+            "AI explanation added inline. Hover to see full explanation.",
+            "Copy Explanation",
+            "Clear"
+          )
+          .then((action) => {
+            if (action === "Copy Explanation") {
+              vscode.env.clipboard.writeText(explanation);
+              vscode.window.showInformationMessage(
+                "Explanation copied to clipboard!"
+              );
+            } else if (action === "Clear") {
+              editor.setDecorations(explanationDecoration, []);
+              explanationDecoration.dispose();
+            }
+          });
+      } catch (error) {
+        // Clear loading decoration on error
+        editor.setDecorations(loadingDecoration, []);
+        loadingDecoration.dispose();
 
-//   function getCommentSymbol(languageId: string): string {
-//   const commentSymbols: Record<string, string> = {
-//     javascript: '//',
-//     typescript: '//',
-//     python: '#',
-//     java: '//',
-//     csharp: '//',
-//     cpp: '//',
-//     c: '//',
-//     ruby: '#',
-//     go: '//',
-//     rust: '//',
-//     php: '//',
-//     swift: '//',
-//     kotlin: '//',
-//     html: '<!--',
-//     css: '/*',
-//     sql: '--',
-//     shell: '#',
-//     yaml: '#',
-//     default: '//'
-//   };
-  
-//   return commentSymbols[languageId] || commentSymbols.default;
-// }
+        console.error("Error in explainCode:", error);
+        vscode.window.showErrorMessage(
+          `Failed to explain code: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`
+        );
+      }
+    })
+  );
+
+  //   function getCommentSymbol(languageId: string): string {
+  //   const commentSymbols: Record<string, string> = {
+  //     javascript: '//',
+  //     typescript: '//',
+  //     python: '#',
+  //     java: '//',
+  //     csharp: '//',
+  //     cpp: '//',
+  //     c: '//',
+  //     ruby: '#',
+  //     go: '//',
+  //     rust: '//',
+  //     php: '//',
+  //     swift: '//',
+  //     kotlin: '//',
+  //     html: '<!--',
+  //     css: '/*',
+  //     sql: '--',
+  //     shell: '#',
+  //     yaml: '#',
+  //     default: '//'
+  //   };
+
+  //   return commentSymbols[languageId] || commentSymbols.default;
+  // }
 
   // Register refactorCode command
   context.subscriptions.push(
@@ -1492,49 +1504,145 @@ context.subscriptions.push(
   );
 
   // Register inline completion provider
-  const completionProvider = new InlineCompletionProvider(modelService, indexer);
-  // Register for multiple languages
-    const languages = [
-        'typescript', 'javascript', 'python', 'java', 'csharp',
-        'cpp', 'c', 'go', 'rust', 'php', 'ruby', 'swift',
-        'kotlin', 'scala', 'r', 'julia', 'dart', 'lua'
-    ];
-    
-    // Register the provider for each language
-    languages.forEach(language => {
-        const provider = vscode.languages.registerInlineCompletionItemProvider(
-            { language },
-            completionProvider
+  console.log("Initializing InlineCompletionProvider...");
+  const completionProvider = new InlineCompletionProvider(
+    modelService,
+    indexer
+  );
+  // Register for all files with a single registration
+  const disposable = vscode.languages.registerInlineCompletionItemProvider(
+    { pattern: "**/*" }, // Match all files
+    completionProvider
+  );
+  context.subscriptions.push(disposable);
+  console.log("InlineCompletionProvider registered for all files");
+
+  // Also register for specific schemes to ensure coverage
+  const schemes = ["file", "untitled"];
+  for (const scheme of schemes) {
+    const schemeDisposable =
+      vscode.languages.registerInlineCompletionItemProvider(
+        { scheme: scheme },
+        completionProvider
+      );
+    context.subscriptions.push(schemeDisposable);
+  }
+  // Check if inline suggestions are enabled - CRITICAL!
+  const inlineSuggestEnabled = vscode.workspace
+    .getConfiguration("editor")
+    .get("inlineSuggest.enabled");
+  if (!inlineSuggestEnabled) {
+    const result = await vscode.window.showWarningMessage(
+      "⚠️ Inline suggestions are DISABLED. Code completions won't work!",
+      "Enable Now",
+      "Cancel"
+    );
+
+    if (result === "Enable Now") {
+      await vscode.workspace
+        .getConfiguration("editor")
+        .update(
+          "inlineSuggest.enabled",
+          true,
+          vscode.ConfigurationTarget.Global
         );
-        context.subscriptions.push(provider);
-    });
-    // Toggle completions on/off
-    const toggleCompletionsCommand = vscode.commands.registerCommand(
-        'sidekick-pro.toggleCompletions',
-        () => {
-            const config = vscode.workspace.getConfiguration('sidekickPro');
-            const currentState = config.get('enableCompletions', true);
-            config.update('enableCompletions', !currentState, vscode.ConfigurationTarget.Global);
-            // completionProvider.setEnabled(!currentState);
-            
-            vscode.window.showInformationMessage(
-                `Code completions ${!currentState ? 'enabled' : 'disabled'}`
-            );
-        }
-    );
-    context.subscriptions.push(toggleCompletionsCommand);
+      vscode.window.showInformationMessage("Inline suggestions enabled!");
+    }
+  }
 
-    // Clear completion cache
-    const clearCacheCommand = vscode.commands.registerCommand(
-        'sidekick-pro.clearCompletionCache',
-        () => {
-            completionProvider.clearCache();
-            vscode.window.showInformationMessage('Completion cache cleared');
-        }
-    );
-    context.subscriptions.push(clearCacheCommand);
+  // Add debug command to check status
+  const checkCompletionCommand = vscode.commands.registerCommand(
+    "sidekick-pro.checkCompletions",
+    () => {
+      const inlineSuggest = vscode.workspace
+        .getConfiguration("editor")
+        .get("inlineSuggest.enabled");
+      const stats = completionProvider.getStats();
 
-    
+      const message = `
+Completion System Status:
+• Inline Suggestions: ${inlineSuggest ? "✅ Enabled" : "❌ DISABLED"}
+• Provider: ${modelService.getCurrentProvider()}
+• Cache Size: ${stats.cacheSize}
+• Requests: ${stats.requestsThisMinute}/${stats.maxRequestsPerMinute}
+• OpenAI: ${
+        modelService.isOpenAIConfigured()
+          ? "✅ Configured"
+          : "❌ Not configured"
+      }
+        `.trim();
+
+      vscode.window.showInformationMessage(message);
+      console.log(message);
+
+      if (!inlineSuggest) {
+        vscode.window.showErrorMessage(
+          "Inline suggestions are DISABLED. Enable them in settings for completions to work!"
+        );
+      }
+    }
+  );
+  context.subscriptions.push(checkCompletionCommand);
+  // Register for multiple languages
+  const languages = [
+    "typescript",
+    "javascript",
+    "python",
+    "java",
+    "csharp",
+    "cpp",
+    "c",
+    "go",
+    "rust",
+    "php",
+    "ruby",
+    "swift",
+    "kotlin",
+    "scala",
+    "r",
+    "julia",
+    "dart",
+    "lua",
+  ];
+
+  // Register the provider for each language
+  languages.forEach((language) => {
+    const provider = vscode.languages.registerInlineCompletionItemProvider(
+      { language },
+      completionProvider
+    );
+    context.subscriptions.push(provider);
+  });
+  // Toggle completions on/off
+  const toggleCompletionsCommand = vscode.commands.registerCommand(
+    "sidekick-pro.toggleCompletions",
+    () => {
+      const config = vscode.workspace.getConfiguration("sidekickPro");
+      const currentState = config.get("enableCompletions", true);
+      config.update(
+        "enableCompletions",
+        !currentState,
+        vscode.ConfigurationTarget.Global
+      );
+      // completionProvider.setEnabled(!currentState);
+
+      vscode.window.showInformationMessage(
+        `Code completions ${!currentState ? "enabled" : "disabled"}`
+      );
+    }
+  );
+  context.subscriptions.push(toggleCompletionsCommand);
+
+  // Clear completion cache
+  const clearCacheCommand = vscode.commands.registerCommand(
+    "sidekick-pro.clearCompletionCache",
+    () => {
+      completionProvider.clearCache();
+      vscode.window.showInformationMessage("Completion cache cleared");
+    }
+  );
+  context.subscriptions.push(clearCacheCommand);
+
   // Chat status bar
   // const completionStatusBar = vscode.window.createStatusBarItem(
   //       vscode.StatusBarAlignment.Right,
@@ -1542,143 +1650,148 @@ context.subscriptions.push(
   //   );
 
   const testCompletionCommand = vscode.commands.registerCommand(
-            'sidekick-pro.testCompletion',
-            async () => {
-                const editor = vscode.window.activeTextEditor;
-                if (!editor) {
-                    vscode.window.showInformationMessage('No active editor');
-                    return;
-                }
-                
-                const position = editor.selection.active;
-                const lineText = editor.document.lineAt(position.line).text;
-                const beforeCursor = lineText.substring(0, position.character);
-                
-                console.log('Testing completion at position:', position);
-                console.log('Text before cursor:', beforeCursor);
-                console.log('Provider:', modelService.getCurrentProvider());
-                
-                try {
-                    // Build a simple prompt for testing
-                    const prompt = beforeCursor + '<CURSOR>';
-                    const completion = await modelService.generateCompletion(
-                        prompt,
-                        '',
-                        50,
-                        editor.document.languageId
-                    );
-                    
-                    if (completion) {
-                        vscode.window.showInformationMessage(`Completion: ${completion.substring(0, 50)}...`);
-                        console.log('Full completion:', completion);
-                    } else {
-                        vscode.window.showWarningMessage('No completion generated');
-                    }
-                } catch (error) {
-                    console.error('Test completion error:', error);
-                    vscode.window.showErrorMessage(`Completion error: ${error}`);
-                }
-            }
+    "sidekick-pro.testCompletion",
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showInformationMessage("No active editor");
+        return;
+      }
+
+      const position = editor.selection.active;
+      const lineText = editor.document.lineAt(position.line).text;
+      const beforeCursor = lineText.substring(0, position.character);
+
+      console.log("Testing completion at position:", position);
+      console.log("Text before cursor:", beforeCursor);
+      console.log("Provider:", modelService.getCurrentProvider());
+
+      try {
+        // Build a simple prompt for testing
+        const prompt = beforeCursor + "<CURSOR>";
+        const completion = await modelService.generateCompletion(
+          prompt,
+          "",
+          50,
+          editor.document.languageId
         );
-        context.subscriptions.push(testCompletionCommand);
-        
-    // } catch (error) {
-    //     console.error('Failed to register completion provider:', error);
-    //     vscode.window.showErrorMessage(`Failed to register completions: ${error}`);
-    // }
+
+        if (completion) {
+          vscode.window.showInformationMessage(
+            `Completion: ${completion.substring(0, 50)}...`
+          );
+          console.log("Full completion:", completion);
+        } else {
+          vscode.window.showWarningMessage("No completion generated");
+        }
+      } catch (error) {
+        console.error("Test completion error:", error);
+        vscode.window.showErrorMessage(`Completion error: ${error}`);
+      }
+    }
+  );
+  context.subscriptions.push(testCompletionCommand);
+
+  // } catch (error) {
+  //     console.error('Failed to register completion provider:', error);
+  //     vscode.window.showErrorMessage(`Failed to register completions: ${error}`);
+  // }
   let completionStatusBar: vscode.StatusBarItem;
   function createCompletionStatusBar() {
     completionStatusBar = vscode.window.createStatusBarItem(
-        vscode.StatusBarAlignment.Right,
-        98
+      vscode.StatusBarAlignment.Right,
+      98
     );
-    
-    completionStatusBar.command = 'sidekick-pro.completionStats';
+
+    completionStatusBar.command = "sidekick-pro.completionStats";
     updateCompletionStatusBar();
     completionStatusBar.show();
-    
+
     // Update every 5 seconds
     setInterval(updateCompletionStatusBar, 5000);
-}
+  }
   function updateCompletionStatusBar() {
-        const stats = completionProvider.getStats();
+    const stats = completionProvider.getStats();
     const requestsPerMin = stats.requestsThisMinute;
-    
+
     // Color code based on usage
-    let icon = '$(pulse)';
-    let color = '';
-    
+    let icon = "$(pulse)";
+    let color = "";
+
     if (requestsPerMin === 0) {
-        icon = '$(circle-slash)';
-        color = 'statusBarItem.warningBackground';
+      icon = "$(circle-slash)";
+      color = "statusBarItem.warningBackground";
     } else if (requestsPerMin < 10) {
-        icon = '$(pulse)';
-        color = ""; // Default color
+      icon = "$(pulse)";
+      color = ""; // Default color
     } else if (requestsPerMin < 15) {
-        icon = '$(warning)';
-        color = 'statusBarItem.warningBackground';
+      icon = "$(warning)";
+      color = "statusBarItem.warningBackground";
     } else {
-        icon = '$(alert)';
-        color = 'statusBarItem.errorBackground';
+      icon = "$(alert)";
+      color = "statusBarItem.errorBackground";
     }
-    
+
     completionStatusBar.text = `${icon} ${requestsPerMin}/20`;
     completionStatusBar.tooltip = `API Requests: ${requestsPerMin}/20 this minute\nCache: ${stats.cacheSize} entries\nClick for details`;
-    
-    if (color) {
-        completionStatusBar.backgroundColor = new vscode.ThemeColor(color);
-    } else {
-        completionStatusBar.backgroundColor = undefined;
-    }
-    }
-    createCompletionStatusBar();
-    updateCompletionStatusBar();
-    // completionStatusBar.show();
-    // context.subscriptions.push(completionStatusBar);
 
-    vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('sidekickPro.enableCompletions')) {
-            const config = vscode.workspace.getConfiguration('sidekickPro');
-            const enabled = config.get('enableCompletions', true);
-            // completionProvider.setEnabled(enabled);
-            updateCompletionStatusBar();
-        }
-        
-        if (e.affectsConfiguration('sidekickPro')) {
-            modelService.loadConfiguration();
-            updateCompletionStatusBar();
-        }
-    });
-    
-    // ========================================
-    // Monitor Active Editor Changes
-    // ========================================
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-        if (editor) {
-            // Update indexer with new file
-            indexer.updateFile(editor.document.uri);
-        }
-    });
-    
-    // Monitor text document changes for indexing
-    vscode.workspace.onDidChangeTextDocument((event) => {
-        // Update index for changed documents
-        if (event.document.uri.scheme === 'file') {
-            indexer.updateFile(event.document.uri);
-        }
-    });
-    
-    // Initial indexing of workspace
-    if (vscode.workspace.workspaceFolders) {
-        vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Indexing workspace for AI completions...",
-            cancellable: false
-        }, async (progress) => {
-            await indexer.indexWorkspace();
-            progress.report({ increment: 100 });
-        });
+    if (color) {
+      completionStatusBar.backgroundColor = new vscode.ThemeColor(color);
+    } else {
+      completionStatusBar.backgroundColor = undefined;
     }
+  }
+  createCompletionStatusBar();
+  updateCompletionStatusBar();
+  // completionStatusBar.show();
+  // context.subscriptions.push(completionStatusBar);
+
+  vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("sidekickPro.enableCompletions")) {
+      const config = vscode.workspace.getConfiguration("sidekickPro");
+      const enabled = config.get("enableCompletions", true);
+      // completionProvider.setEnabled(enabled);
+      updateCompletionStatusBar();
+    }
+
+    if (e.affectsConfiguration("sidekickPro")) {
+      modelService.loadConfiguration();
+      updateCompletionStatusBar();
+    }
+  });
+
+  // ========================================
+  // Monitor Active Editor Changes
+  // ========================================
+  vscode.window.onDidChangeActiveTextEditor((editor) => {
+    if (editor) {
+      // Update indexer with new file
+      indexer.updateFile(editor.document.uri);
+    }
+  });
+
+  // Monitor text document changes for indexing
+  vscode.workspace.onDidChangeTextDocument((event) => {
+    // Update index for changed documents
+    if (event.document.uri.scheme === "file") {
+      indexer.updateFile(event.document.uri);
+    }
+  });
+
+  // Initial indexing of workspace
+  if (vscode.workspace.workspaceFolders) {
+    vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Indexing workspace for AI completions...",
+        cancellable: false,
+      },
+      async (progress) => {
+        await indexer.indexWorkspace();
+        progress.report({ increment: 100 });
+      }
+    );
+  }
   // Privacy status bar
   // const privacyStatusBar = vscode.window.createStatusBarItem(
   //   vscode.StatusBarAlignment.Right,
@@ -1694,27 +1807,35 @@ context.subscriptions.push(
 
   // Register hover provider
   const statsCommand = vscode.commands.registerCommand(
-    'sidekick-pro.completionStats',
+    "sidekick-pro.completionStats",
     () => {
-        const stats = completionProvider.getStats();
-        const message = `
+      const stats = completionProvider.getStats();
+      const message = `
 Completion Statistics:
 • Cache Size: ${stats.cacheSize} entries
 • Pending Requests: ${stats.pendingRequests}
 • Requests This Minute: ${stats.requestsThisMinute}/20
-• Cache Hit Rate: ${stats.cacheSize > 0 ? ((stats.cacheSize - stats.pendingRequests) / stats.cacheSize * 100).toFixed(2) : "N/A"}%
+• Cache Hit Rate: ${
+        stats.cacheSize > 0
+          ? (
+              ((stats.cacheSize - stats.pendingRequests) / stats.cacheSize) *
+              100
+            ).toFixed(2)
+          : "N/A"
+      }%
         `.trim();
-        
-        vscode.window.showInformationMessage(message, 'Clear Cache', 'Close')
-            .then(selection => {
-                if (selection === 'Clear Cache') {
-                    completionProvider.clearCache();
-                    vscode.window.showInformationMessage('Cache cleared!');
-                }
-            });
+
+      vscode.window
+        .showInformationMessage(message, "Clear Cache", "Close")
+        .then((selection) => {
+          if (selection === "Clear Cache") {
+            completionProvider.clearCache();
+            vscode.window.showInformationMessage("Cache cleared!");
+          }
+        });
     }
-);
-context.subscriptions.push(statsCommand);
+  );
+  context.subscriptions.push(statsCommand);
   const hoverProvider = vscode.languages.registerHoverProvider(
     { pattern: "**/*" },
     {
@@ -1737,16 +1858,16 @@ context.subscriptions.push(statsCommand);
     }
   );
   let verboseLogging = false;
-const toggleLoggingCommand = vscode.commands.registerCommand(
-    'sidekick-pro.toggleCompletionLogging',
+  const toggleLoggingCommand = vscode.commands.registerCommand(
+    "sidekick-pro.toggleCompletionLogging",
     () => {
-        verboseLogging = !verboseLogging;
-        vscode.window.showInformationMessage(
-            `Completion logging ${verboseLogging ? 'enabled' : 'disabled'}`
-        );
+      verboseLogging = !verboseLogging;
+      vscode.window.showInformationMessage(
+        `Completion logging ${verboseLogging ? "enabled" : "disabled"}`
+      );
     }
-);
-context.subscriptions.push(toggleLoggingCommand);
+  );
+  context.subscriptions.push(toggleLoggingCommand);
 
   context.subscriptions.push(hoverProvider);
 
