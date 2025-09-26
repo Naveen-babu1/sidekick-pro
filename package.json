@@ -49,33 +49,55 @@
       {
         "command": "sidekick-ai.explainCode",
         "title": "Explain Code",
-        "category": "Sidekick AI"
+        "category": "Sidekick AI",
+        "icon": "$(lightbulb)"
       },
       {
         "command": "sidekick-ai.refactorCode",
         "title": "Refactor with AI",
-        "category": "Sidekick AI"
+        "category": "Sidekick AI",
+        "icon": "$(edit)"
       },
       {
         "command": "sidekick-ai.generateTests",
         "title": "Generate Tests",
-        "category": "Sidekick AI"
+        "category": "Sidekick AI",
+        "icon": "$(edit)"
       },
       {
         "command": "sidekick-ai.fixError",
         "title": "Fix with AI",
-        "category": "Sidekick AI"
+        "category": "Sidekick AI",
+        "icon": "$(bug)"
       },
       {
         "command": "sidekick-ai.explainError",
         "title": "Explain Error",
-        "category": "Sidekick AI"
+        "category": "Sidekick AI",
+        "icon": "$(lightbulb)"
       },
       {
         "command": "sidekick-ai.privacyStatus",
         "title": "Privacy Status",
-        "category": "Sidekick AI"
-      }
+        "category": "Sidekick AI",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "sidekick-pro.toggleCompletions",
+        "title": "Toggle AI Completions",
+        "category": "Sidekick Pro",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "sidekick-pro.clearCompletionCache",
+        "title": "Clear Completion Cache",
+        "category": "Sidekick Pro"
+      },
+      {
+            "command": "sidekick-pro.completionStats",
+            "title": "Show Completion Statistics",
+            "category": "Sidekick Pro"
+        }
     ],
     "menus": {
       "editor/context": [
@@ -100,6 +122,7 @@
           "group": "1_sidekickAI@4"
         }
       ],
+      
       "commandPalette": [
         {
           "command": "sidekick-ai.explainCode",
@@ -142,6 +165,16 @@
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "sidekick-pro.toggleCompletions",
+        "key": "ctrl+shift+space",
+        "mac": "cmd+shift+space"
+      },
+      {
+        "command": "sidekick-pro.testCompletion",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t"
       }
     ],
     "configuration": {
@@ -187,6 +220,32 @@
           "type": "boolean",
           "default": false,
           "description": "Use GPU acceleration if available"
+        },
+        "sidekickPro.enableCompletions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-powered code completions"
+        },
+        "sidekickPro.completionTriggerDelay": {
+          "type": "number",
+          "default": 300,
+          "minimum": 100,
+          "maximum": 2000,
+          "description": "Delay in milliseconds before triggering completions"
+        },
+        "sidekickPro.completionMaxTokens": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 500,
+          "description": "Maximum tokens for code completions"
+        },
+        "sidekickPro.completionTemperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Temperature for completion generation (0 = deterministic, 1 = creative)"
         }
       }
     }

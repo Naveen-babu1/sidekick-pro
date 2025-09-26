@@ -1492,46 +1492,229 @@ context.subscriptions.push(
   );
 
   // Register inline completion provider
-  const inlineProvider = new InlineCompletionProvider(
-    context,
-    indexer,
-    privacyGuard
-  );
-  const inlineDisposable =
-    vscode.languages.registerInlineCompletionItemProvider(
-      { pattern: "**/*" },
-      inlineProvider
+  const completionProvider = new InlineCompletionProvider(modelService, indexer);
+  // Register for multiple languages
+    const languages = [
+        'typescript', 'javascript', 'python', 'java', 'csharp',
+        'cpp', 'c', 'go', 'rust', 'php', 'ruby', 'swift',
+        'kotlin', 'scala', 'r', 'julia', 'dart', 'lua'
+    ];
+    
+    // Register the provider for each language
+    languages.forEach(language => {
+        const provider = vscode.languages.registerInlineCompletionItemProvider(
+            { language },
+            completionProvider
+        );
+        context.subscriptions.push(provider);
+    });
+    // Toggle completions on/off
+    const toggleCompletionsCommand = vscode.commands.registerCommand(
+        'sidekick-pro.toggleCompletions',
+        () => {
+            const config = vscode.workspace.getConfiguration('sidekickPro');
+            const currentState = config.get('enableCompletions', true);
+            config.update('enableCompletions', !currentState, vscode.ConfigurationTarget.Global);
+            // completionProvider.setEnabled(!currentState);
+            
+            vscode.window.showInformationMessage(
+                `Code completions ${!currentState ? 'enabled' : 'disabled'}`
+            );
+        }
     );
+    context.subscriptions.push(toggleCompletionsCommand);
 
-  context.subscriptions.push(inlineDisposable);
+    // Clear completion cache
+    const clearCacheCommand = vscode.commands.registerCommand(
+        'sidekick-pro.clearCompletionCache',
+        () => {
+            completionProvider.clearCache();
+            vscode.window.showInformationMessage('Completion cache cleared');
+        }
+    );
+    context.subscriptions.push(clearCacheCommand);
 
+    
   // Chat status bar
-  const chatStatusBarItem = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    100
-  );
+  // const completionStatusBar = vscode.window.createStatusBarItem(
+  //       vscode.StatusBarAlignment.Right,
+  //       99
+  //   );
 
-  chatStatusBarItem.text = "$(comment-discussion) AI Chat";
-  chatStatusBarItem.tooltip = "Open Sidekick AI Chat";
-  chatStatusBarItem.command = "sidekick-ai.openChat";
-  chatStatusBarItem.show();
+  const testCompletionCommand = vscode.commands.registerCommand(
+            'sidekick-pro.testCompletion',
+            async () => {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showInformationMessage('No active editor');
+                    return;
+                }
+                
+                const position = editor.selection.active;
+                const lineText = editor.document.lineAt(position.line).text;
+                const beforeCursor = lineText.substring(0, position.character);
+                
+                console.log('Testing completion at position:', position);
+                console.log('Text before cursor:', beforeCursor);
+                console.log('Provider:', modelService.getCurrentProvider());
+                
+                try {
+                    // Build a simple prompt for testing
+                    const prompt = beforeCursor + '<CURSOR>';
+                    const completion = await modelService.generateCompletion(
+                        prompt,
+                        '',
+                        50,
+                        editor.document.languageId
+                    );
+                    
+                    if (completion) {
+                        vscode.window.showInformationMessage(`Completion: ${completion.substring(0, 50)}...`);
+                        console.log('Full completion:', completion);
+                    } else {
+                        vscode.window.showWarningMessage('No completion generated');
+                    }
+                } catch (error) {
+                    console.error('Test completion error:', error);
+                    vscode.window.showErrorMessage(`Completion error: ${error}`);
+                }
+            }
+        );
+        context.subscriptions.push(testCompletionCommand);
+        
+    // } catch (error) {
+    //     console.error('Failed to register completion provider:', error);
+    //     vscode.window.showErrorMessage(`Failed to register completions: ${error}`);
+    // }
+  let completionStatusBar: vscode.StatusBarItem;
+  function createCompletionStatusBar() {
+    completionStatusBar = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right,
+        98
+    );
+    
+    completionStatusBar.command = 'sidekick-pro.completionStats';
+    updateCompletionStatusBar();
+    completionStatusBar.show();
+    
+    // Update every 5 seconds
+    setInterval(updateCompletionStatusBar, 5000);
+}
+  function updateCompletionStatusBar() {
+        const stats = completionProvider.getStats();
+    const requestsPerMin = stats.requestsThisMinute;
+    
+    // Color code based on usage
+    let icon = '$(pulse)';
+    let color = '';
+    
+    if (requestsPerMin === 0) {
+        icon = '$(circle-slash)';
+        color = 'statusBarItem.warningBackground';
+    } else if (requestsPerMin < 10) {
+        icon = '$(pulse)';
+        color = ""; // Default color
+    } else if (requestsPerMin < 15) {
+        icon = '$(warning)';
+        color = 'statusBarItem.warningBackground';
+    } else {
+        icon = '$(alert)';
+        color = 'statusBarItem.errorBackground';
+    }
+    
+    completionStatusBar.text = `${icon} ${requestsPerMin}/20`;
+    completionStatusBar.tooltip = `API Requests: ${requestsPerMin}/20 this minute\nCache: ${stats.cacheSize} entries\nClick for details`;
+    
+    if (color) {
+        completionStatusBar.backgroundColor = new vscode.ThemeColor(color);
+    } else {
+        completionStatusBar.backgroundColor = undefined;
+    }
+    }
+    createCompletionStatusBar();
+    updateCompletionStatusBar();
+    // completionStatusBar.show();
+    // context.subscriptions.push(completionStatusBar);
 
-  context.subscriptions.push(chatStatusBarItem);
-
+    vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('sidekickPro.enableCompletions')) {
+            const config = vscode.workspace.getConfiguration('sidekickPro');
+            const enabled = config.get('enableCompletions', true);
+            // completionProvider.setEnabled(enabled);
+            updateCompletionStatusBar();
+        }
+        
+        if (e.affectsConfiguration('sidekickPro')) {
+            modelService.loadConfiguration();
+            updateCompletionStatusBar();
+        }
+    });
+    
+    // ========================================
+    // Monitor Active Editor Changes
+    // ========================================
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (editor) {
+            // Update indexer with new file
+            indexer.updateFile(editor.document.uri);
+        }
+    });
+    
+    // Monitor text document changes for indexing
+    vscode.workspace.onDidChangeTextDocument((event) => {
+        // Update index for changed documents
+        if (event.document.uri.scheme === 'file') {
+            indexer.updateFile(event.document.uri);
+        }
+    });
+    
+    // Initial indexing of workspace
+    if (vscode.workspace.workspaceFolders) {
+        vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Indexing workspace for AI completions...",
+            cancellable: false
+        }, async (progress) => {
+            await indexer.indexWorkspace();
+            progress.report({ increment: 100 });
+        });
+    }
   // Privacy status bar
-  const privacyStatusBar = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    98
-  );
-  privacyStatusBar.text = "$(shield) Privacy Mode: ON";
-  privacyStatusBar.tooltip =
-    "All AI processing happens locally. Click for privacy report.";
-  privacyStatusBar.command = "sidekick-ai.privacyStatus";
-  privacyStatusBar.show();
+  // const privacyStatusBar = vscode.window.createStatusBarItem(
+  //   vscode.StatusBarAlignment.Right,
+  //   98
+  // );
+  // privacyStatusBar.text = "$(shield) Privacy Mode: ON";
+  // privacyStatusBar.tooltip =
+  //   "All AI processing happens locally. Click for privacy report.";
+  // privacyStatusBar.command = "sidekick-ai.privacyStatus";
+  // privacyStatusBar.show();
 
-  context.subscriptions.push(privacyStatusBar);
+  // context.subscriptions.push(privacyStatusBar);
 
   // Register hover provider
+  const statsCommand = vscode.commands.registerCommand(
+    'sidekick-pro.completionStats',
+    () => {
+        const stats = completionProvider.getStats();
+        const message = `
+Completion Statistics:
+• Cache Size: ${stats.cacheSize} entries
+• Pending Requests: ${stats.pendingRequests}
+• Requests This Minute: ${stats.requestsThisMinute}/20
+• Cache Hit Rate: ${stats.cacheSize > 0 ? ((stats.cacheSize - stats.pendingRequests) / stats.cacheSize * 100).toFixed(2) : "N/A"}%
+        `.trim();
+        
+        vscode.window.showInformationMessage(message, 'Clear Cache', 'Close')
+            .then(selection => {
+                if (selection === 'Clear Cache') {
+                    completionProvider.clearCache();
+                    vscode.window.showInformationMessage('Cache cleared!');
+                }
+            });
+    }
+);
+context.subscriptions.push(statsCommand);
   const hoverProvider = vscode.languages.registerHoverProvider(
     { pattern: "**/*" },
     {
@@ -1553,6 +1736,17 @@ context.subscriptions.push(
       },
     }
   );
+  let verboseLogging = false;
+const toggleLoggingCommand = vscode.commands.registerCommand(
+    'sidekick-pro.toggleCompletionLogging',
+    () => {
+        verboseLogging = !verboseLogging;
+        vscode.window.showInformationMessage(
+            `Completion logging ${verboseLogging ? 'enabled' : 'disabled'}`
+        );
+    }
+);
+context.subscriptions.push(toggleLoggingCommand);
 
   context.subscriptions.push(hoverProvider);
 
