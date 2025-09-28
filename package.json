@@ -15,6 +15,26 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sidekickPro-chat",
+          "title": "Sidekick Pro Chat",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "sidekickPro-chat": [
+        {
+          "type": "webview",
+          "id": "sidekickPro.copilotChat",
+          "name": "Chat",
+          "icon": "$(comment-discussion)",
+          "contextualTitle": "Sidekick Pro Chat"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "sidekick.chat.open",
@@ -94,10 +114,21 @@
         "category": "Sidekick Pro"
       },
       {
-            "command": "sidekick-pro.completionStats",
-            "title": "Show Completion Statistics",
-            "category": "Sidekick Pro"
-        }
+        "command": "sidekick-pro.completionStats",
+        "title": "Show Completion Statistics",
+        "category": "Sidekick Pro"
+      },
+      {
+        "command": "sidekickPro.openInlineChat",
+        "title": "Open Inline Chat",
+        "category": "Sidekick Pro",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "sidekickPro.addToChat",
+        "title": "Add to Chat",
+        "category": "Sidekick Pro"
+      }
     ],
     "menus": {
       "editor/context": [
@@ -120,9 +151,13 @@
           "command": "sidekick-ai.fixError",
           "when": "editorHasSelection",
           "group": "1_sidekickAI@4"
+        },
+        {
+          "command": "sidekickPro.addToChat",
+          "when": "editorHasSelection",
+          "group": "1_sidekickpro@5"
         }
       ],
-      
       "commandPalette": [
         {
           "command": "sidekick-ai.explainCode",
@@ -175,6 +210,17 @@
         "command": "sidekick-pro.testCompletion",
         "key": "ctrl+alt+t",
         "mac": "cmd+alt+t"
+      },
+      {
+        "command": "sidekickPro.openInlineChat",
+        "key": "ctrl+shift+y",
+        "mac": "cmd+shift+y"
+      },
+      {
+        "command": "sidekickPro.addToChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorHasSelection"
       }
     ],
     "configuration": {
@@ -304,7 +350,6 @@
           "maximum": 20,
           "description": "Number of context lines to send with completion requests"
         }
-        
       }
     }
   },

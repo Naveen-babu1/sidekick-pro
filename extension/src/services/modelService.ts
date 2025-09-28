@@ -176,6 +176,8 @@ export class ModelService {
     }
   }
 
+  
+
   // Explain code - already has languageId
   async explainCode(
     code: string,
@@ -518,6 +520,8 @@ Rules:
     return null;
   }
 
+  
+
   // Add method to pre-warm the completion API
   async prewarmCompletion(): Promise<void> {
     if (this.currentProvider === "openai" && this.isOpenAIConfigured()) {
@@ -572,6 +576,7 @@ Rules:
   //            this.config.openaiKey !== 'your-openai-api-key-here' &&
   //            this.config.openaiKey.startsWith('sk-');
   // }
+  
 
   async ensureInitialized(): Promise<void> {
     if (!this.isOpenAIConfigured() && this.localAI) {

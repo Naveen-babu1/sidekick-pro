@@ -9,6 +9,7 @@ import { CodeFixProvider } from "./providers/CodeFixProvider";
 import { CodeFixHandler } from "./providers/CodeFixHandler";
 import { ModelService } from "./services/modelService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
+import { CopilotStyleChatProvider } from "./providers/CopilotStyleChatProvider";
 
 // Chat Panel Class - Creates a webview panel on the right side
 class ChatPanel {
@@ -1156,6 +1157,137 @@ Provide a brief explanation and how to fix it:`;
   // );
 
   // In extension.ts, update the explainCode command to show inline decorations
+
+  // Register Copilot-style chat provider
+  const copilotChatProvider = new CopilotStyleChatProvider(
+    context.extensionUri,
+    context,
+    modelService,
+    indexer
+  );
+
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      CopilotStyleChatProvider.viewType,
+      copilotChatProvider,
+      {
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      }
+    )
+  );
+
+  // Register commands for inline chat
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sidekickPro.openInlineChat", () => {
+      // Open the chat panel
+      vscode.commands.executeCommand(
+        "workbench.view.extension.sidekickPro-chat"
+      );
+    })
+  );
+
+  // Register command for adding selection to chat
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sidekickPro.addToChat", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && !editor.selection.isEmpty) {
+        // Focus chat view
+        await vscode.commands.executeCommand(
+          "workbench.view.extension.sidekickPro-chat"
+        );
+        // Add a small delay to ensure view is ready
+        setTimeout(() => {
+          vscode.window.showInformationMessage(
+            "Selection added to chat context"
+          );
+        }, 100);
+      } else {
+        vscode.window.showInformationMessage(
+          "Please select code to add to chat"
+        );
+      }
+    })
+  );
+
+  // // Register other chat-related commands
+  // context.subscriptions.push(
+  //     vscode.commands.registerCommand('sidekick-ai.openChat', () => {
+  //         vscode.commands.executeCommand('workbench.view.extension.sidekickPro-chat');
+  //     })
+  // );
+
+  // context.subscriptions.push(
+  //     vscode.commands.registerCommand('sidekick.chat.open', () => {
+  //         vscode.commands.executeCommand('workbench.view.extension.sidekickPro-chat');
+  //     })
+  // );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "sidekick-pro.testAllFeatures",
+      async () => {
+        const testCode = `function add(a: number, b: number): number {
+    return a + b;
+}`;
+
+        try {
+          console.log("Testing all OpenAI features...");
+
+          // Test chat
+          const chatResponse = await modelService.chat(
+            "What does this code do: " + testCode,
+            ""
+          );
+          console.log("✅ Chat works:", chatResponse.substring(0, 50) + "...");
+
+          // Test explain
+          const explainResponse = await modelService.explainCode(
+            testCode,
+            "",
+            "typescript"
+          );
+          console.log(
+            "✅ Explain works:",
+            explainResponse.substring(0, 50) + "..."
+          );
+
+          // Test tests generation
+          const testsResponse = await modelService.generateTests(
+            testCode,
+            "",
+            "typescript"
+          );
+          console.log(
+            "✅ Test generation works:",
+            testsResponse.substring(0, 50) + "..."
+          );
+
+          // Test refactor
+          const refactorResponse = await modelService.refactorCode(
+            testCode,
+            "add JSDoc comments",
+            "",
+            "typescript"
+          );
+          console.log(
+            "✅ Refactor works:",
+            refactorResponse.substring(0, 50) + "..."
+          );
+
+          vscode.window.showInformationMessage(
+            "✅ All OpenAI features working!"
+          );
+        } catch (error: any) {
+          vscode.window.showErrorMessage(
+            `Feature test failed: ${error.message}`
+          );
+          console.error("Test error:", error);
+        }
+      }
+    )
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("sidekick-ai.explainCode", async () => {
