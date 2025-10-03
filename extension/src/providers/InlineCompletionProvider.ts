@@ -473,10 +473,17 @@
 import * as vscode from "vscode";
 import { ModelService } from "../services/modelService";
 import { CodeIndexer } from "../indexer/CodeIndexer";
+import { ContextExtractor, ExtractedContext } from "../services/ContextExtractor";
+import { SmartCache } from "../services/SmartCache";
+import { PromptTemplates } from "../services/PromptTemplates";
 
 export class InlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private modelService: ModelService;
   private codeIndexer: CodeIndexer;
+
+  private contextExtractor = ContextExtractor.getInstance();
+  private cache = SmartCache.getInstance();
+  private promptTemplates = PromptTemplates.getInstance();
   
   // Simplified caching for debugging
   private completionCache = new Map<string, { completion: string, timestamp: number }>();
@@ -487,6 +494,7 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   // Request tracking
   private requestCount = 0;
   private requestResetTime = Date.now();
+  private readonly MAX_REQUESTS_PER_MINUTE = 20;
 
   constructor(modelService: ModelService, codeIndexer: CodeIndexer) {
     this.modelService = modelService;
@@ -512,28 +520,42 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
       console.log("Skipping - text too short");
       return undefined;
     }
-    
-    // FIRST - Try quick patterns for immediate response
-    const quickPattern = this.getQuickPattern(textBeforeCursor.trim(), document.languageId);
-    if (quickPattern) {
-      console.log(`Quick pattern matched! Returning: "${quickPattern.substring(0, 20)}..."`);
-      return [new vscode.InlineCompletionItem(quickPattern)];
+
+    // Rate limiting check
+    if (!this.checkRateLimit()) {
+      console.log("Rate limit exceeded");
+      return undefined;
     }
     
+    
+    
+    
+
+    // NEW: Extract comprehensive context using ContextExtractor
+    const extractedContext = await this.contextExtractor.extractContext(document, position);
+    console.log(`Context extracted in ${extractedContext.extractionTime}ms`);
+    
+    // Create cache key
+    const cacheKey = this.createCacheKey(document, position, extractedContext);
+    
+    // Check cache
+    const cached = await this.cache.get(cacheKey, extractedContext, 'completion');
+    if (cached) {
+      console.log("Using cached completion from SmartCache");
+      return [new vscode.InlineCompletionItem(cached)];
+    }
+
+    // FIRST - Try quick patterns for immediate response
+    const quickPattern = await this.cache.get(textBeforeCursor.trim(), extractedContext, 'pattern');
+    if (quickPattern) {
+      console.log("Quick pattern matched!");
+      return [new vscode.InlineCompletionItem(quickPattern)];
+    }
+
     // Check if we should skip (comments/strings)
     if (this.shouldSkip(textBeforeCursor)) {
       console.log("Skipping - in comment or string");
       return undefined;
-    }
-    
-    // Create cache key
-    const cacheKey = `${document.fileName}:${position.line}:${textBeforeCursor}`;
-    
-    // Check cache
-    const cached = this.completionCache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < 60000)) {
-      console.log("Returning cached completion");
-      return [new vscode.InlineCompletionItem(cached.completion)];
     }
     
     // Skip if same as last request
@@ -597,46 +619,58 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
         
         try {
           this.requestCount++;
-          this.lastRequestKey = cacheKey;
           
-          // Get context
-          const contextLines = [];
-          const startLine = Math.max(0, position.line - 3);
-          for (let i = startLine; i < position.line; i++) {
-            contextLines.push(document.lineAt(i).text);
-          }
+          // NEW: Build structured prompt using PromptTemplates
+          const prompt = this.promptTemplates.completionPrompt(extractedContext, {
+            maxTokens: 100,
+            style: 'concise'
+          });
           
-          const prompt = `Language: ${document.languageId}
-Context: ${contextLines.join('\n')}
-Complete this line: ${textBeforeCursor}
-Provide only the code completion:`;
+          console.log("Sending structured prompt to ModelService");
+          console.log(`Prompt includes: ${extractedContext.imports.length} imports, ` +
+                     `${extractedContext.localVariables.length} variables, ` +
+                     `${extractedContext.relatedSymbols.length} symbols`);
           
-          console.log("Sending prompt to API...");
-          
+          // Get completion with timeout
           const completion = await Promise.race([
-            this.modelService.generateCompletion(prompt, '', 50, document.languageId),
+            this.modelService.generateCompletion(
+              prompt, 
+              '', // Context is already in the prompt
+              100, 
+              document.languageId
+            ),
             new Promise<string>((_, reject) => 
               setTimeout(() => reject(new Error('Timeout')), 2000)
             )
           ]) as string;
           
-          console.log(`API response: "${completion?.substring(0, 50)}..."`);
-          
           if (completion && completion.trim()) {
             const cleaned = this.cleanCompletion(completion, textBeforeCursor);
             
             if (cleaned) {
-              this.completionCache.set(cacheKey, {
-                completion: cleaned,
-                timestamp: Date.now()
+              // NEW: Store in SmartCache for future use
+              await this.cache.set(cacheKey, cleaned, extractedContext, {
+                feature: 'completion',
+                language: document.languageId,
+                modelUsed: this.modelService.getCurrentProvider(),
+                ttl: 60000 // 1 minute TTL
               });
+              
+              // Also update pattern cache if this is a common pattern
+              if (this.isCommonPattern(textBeforeCursor)) {
+                await this.cache.set(textBeforeCursor.trim(), cleaned, extractedContext, {
+                  feature: 'pattern',
+                  language: document.languageId,
+                  ttl: 300000 // 5 minutes for patterns
+                });
+              }
               
               resolve([new vscode.InlineCompletionItem(cleaned)]);
               return;
             }
           }
           
-          console.log("No valid completion to return");
+          console.log("No valid completion generated");
           resolve(undefined);
           
         } catch (error) {
@@ -646,6 +680,37 @@ Provide only the code completion:`;
       }, this.DEBOUNCE_DELAY);
     });
   }
+
+  private checkRateLimit(): boolean {
+    const now = Date.now();
+    
+    // Reset counter every minute
+    if (now - this.requestResetTime > 60000) {
+      this.requestCount = 0;
+      this.requestResetTime = now;
+    }
+    
+    return this.requestCount < this.MAX_REQUESTS_PER_MINUTE;
+  }
+  
+  private createCacheKey(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    context: ExtractedContext
+  ): string {
+    // Create a comprehensive cache key using extracted context
+    const components = [
+      document.fileName,
+      position.line,
+      position.character,
+      context.currentFunction?.name || 'global',
+      context.currentClass?.name || 'none',
+      context.imports.slice(0, 3).join(',')
+    ];
+    
+    return components.join(':');
+  }
+  
   
   private shouldSkip(text: string): boolean {
     const trimmed = text.trim();
@@ -662,6 +727,23 @@ Provide only the code completion:`;
     }
     
     return false;
+  }
+
+  private isCommonPattern(text: string): boolean {
+    const patterns = [
+      /^if\s*\($/,
+      /^for\s*\($/,
+      /^while\s*\($/,
+      /^function\s+\w+\s*\($/,
+      /^class\s+\w+/,
+      /^const\s+\w+\s*=$/,
+      /^let\s+\w+\s*=$/,
+      /^import\s+/,
+      /^export\s+/,
+      /^return\s+$/
+    ];
+    
+    return patterns.some(pattern => pattern.test(text.trim()));
   }
   
   private getQuickPattern(text: string, language: string): string | null {
@@ -723,14 +805,21 @@ Provide only the code completion:`;
   
   public setEnabled(enabled: boolean) {
     console.log(`Completions ${enabled ? 'enabled' : 'disabled'}`);
+    if (!enabled) {
+      this.clearCache();
+    }
   }
   
   public getStats() {
+    const cacheStats = this.cache.getStatistics();
     return {
-      cacheSize: this.completionCache.size,
+      cacheSize: cacheStats.memoryCacheSize,
+      patternCacheSize: cacheStats.patternCacheSize,
+      hitRate: cacheStats.hitRate,
       requestsThisMinute: this.requestCount,
-      maxRequestsPerMinute: 30,
-      pendingRequests: 0
+      maxRequestsPerMinute: this.MAX_REQUESTS_PER_MINUTE,
+      totalHits: cacheStats.totalHits,
+      totalRequests: cacheStats.totalRequests
     };
   }
 }

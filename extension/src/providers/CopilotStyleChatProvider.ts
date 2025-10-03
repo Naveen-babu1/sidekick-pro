@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import { ModelService } from "../services/modelService";
 import { CodeIndexer } from "../indexer/CodeIndexer";
-
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -618,6 +617,23 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     _scriptUri: vscode.Uri,
     _styleUri: vscode.Uri
   ): string {
+    console.log('Extension URI:', this._extensionUri.fsPath);
+    
+  
+    // try {
+    //     if (this._view) {
+    //         insertIcon = this._view.webview.asWebviewUri(
+    //             vscode.Uri.joinPath(this._extensionUri, 'media', 'insert.svg')
+    //         ).toString();
+    //         copyIcon = this._view.webview.asWebviewUri(
+    //             vscode.Uri.joinPath(this._extensionUri, 'media', 'copy.svg')
+    //         ).toString();
+    //         // Log to verify paths
+    //         console.log('Icon URLs generated:', { insertIcon, copyIcon });
+    //     }
+    // } catch (error) {
+    //     console.error('Error generating icon URIs:', error);
+    // }
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -757,6 +773,33 @@ body {
     width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
     border: 1px solid var(--vscode-input-border); padding: 8px; border-radius: 2px;
     font-family: inherit; font-size: inherit; resize: vertical; min-height: 60px; max-height: 200px;
+}
+.code-action {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+}
+
+.code-action:hover {
+    background: var(--vscode-toolbar-hoverBackground);
+}
+
+.code-action svg {
+    width: 14px;
+    height: 14px;
+    fill: var(--vscode-foreground);
+    opacity: 0.7;
+}
+
+.code-action:hover svg {
+    opacity: 1;
 }
 .chat-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
 .suggestions {
@@ -951,6 +994,24 @@ body {
 const vscode = acquireVsCodeApi();
 let currentContext = [];
 let messages = [];
+// Store icon paths as constants
+const ICON_COPY = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
+<path d="M128.385 80.482q3.174-.008 6.347-.02c5.705-.019 11.409-.012 17.114 0..."/>
+</svg>\`;
+
+const ICON_INSERT = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
+<path d="m23.16 140.74 2.114-.012c2.326-.01 4.652-.007..."/>
+</svg>\`;
+
+const ICON_NEWFILE = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
+<path d="m100.61 268.866 3.407-.014h3.728l3.972-.01..."/>
+</svg>\`;
+
+const ICON_TERMINAL = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+<rect x="2" y="2" width="12" height="12" stroke="currentColor" fill="none"/>
+<path d="M4 6l2 2-2 2M7 10h5"/>
+</svg>\`;
+
 
 // Command suggestions
 const commandSuggestions = [
@@ -1158,8 +1219,19 @@ function removeContext(index) {
     vscode.postMessage({ type: 'removeContext', index });
 }
 
-function copyCode(code) {
-    vscode.postMessage({ type: 'copyCode', code });
+window.codeBlocks = window.codeBlocks || {};
+function copyCode(blockId) {
+    const code = window.codeBlocks[blockId];
+    if (!code) {
+        console.error('No code found for block:', blockId);
+        return;
+    }
+    
+    // Send to VS Code for copying
+    vscode.postMessage({ 
+        type: 'copyCode', 
+        code: code 
+    });
 }
 
 function insertCode(code) {
@@ -1291,28 +1363,17 @@ function formatMessageContent(content) {
                     <span class="code-block-language">\${language}</span>
                     <div class="code-actions" id="actions-\${blockId}" style="display: none;">
                         <button class="code-action" onclick="insertAtCursor('\${blockId}')" title="Insert at cursor">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M12 9.5v2.5l-4 3-4-3v-2.5l4 3 4-3z"/>
-                                <path d="M8 2v7.5m0 0l3-3m-3 3l-3-3"/>
-                            </svg>
+                            \${ICON_INSERT}
                         </button>
                         <button class="code-action" onclick="copyCode('\${blockId}')" title="Copy">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M10 3h3v10h-7v-3h4V3z"/>
-                                <path d="M6 2H3v10h7V5H6V2z"/>
-                            </svg>
+                            \${ICON_COPY}
+                        </button>
                         </button>
                         <button class="code-action" onclick="insertIntoNewFile('\${blockId}', '\${language}')" title="Insert into new file">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M9 1H3v14h10V5L9 1z"/>
-                                <path d="M9 1v4h4"/>
-                            </svg>
+                            \${ICON_NEWFILE}
                         </button>
                         <button class="code-action" onclick="insertIntoTerminal('\${blockId}')" title="Insert into terminal">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M2 2v12h12V2H2zm10 10H4V4h8v8z"/>
-                                <path d="M6 9l2 2 2-2M6 6l2 2-2 2"/>
-                            </svg>
+                            \${ICON_TERMINAL}
                         </button>
                     </div>
                 </div>

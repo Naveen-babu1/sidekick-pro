@@ -4,12 +4,20 @@ import * as path from "path";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
 import { LocalAIProvider } from "../providers/LocalAIProvider";
+import { ContextExtractor, ExtractedContext } from "../services/ContextExtractor";
+import { SmartCache } from "../services/SmartCache";
+import { PromptTemplates } from "../services/PromptTemplates";
+
 
 export class ModelService {
   private config: any = {};
   private localAI: LocalAIProvider | null = null;
   private contextKeeperUrl: string = "";
   private currentProvider: "openai" | "local" = "local";
+
+  private contextExtractor = ContextExtractor.getInstance();
+  private cache = SmartCache.getInstance();
+  private promptTemplates = PromptTemplates.getInstance();
 
   constructor(private context: vscode.ExtensionContext) {
     this.context = context;
@@ -156,23 +164,120 @@ export class ModelService {
   ): Promise<string> {
     // For completions, we want them to be FAST
     // Use a simpler prompt format for better speed
+    // Check if this is a structured prompt from PromptTemplates
+    const isStructuredPrompt = prompt.includes('Language:') && prompt.includes('Current context:');
+    
+    // If not structured, keep backward compatibility
+    if (!isStructuredPrompt) {
+      // Legacy path for old callers
+      return this.generateCompletionLegacy(prompt, context, maxTokens, languageId);
+    }
 
     if (this.currentProvider === "openai" && this.isOpenAIConfigured()) {
       try {
-        return await this.getOpenAICodeCompletion(
-          prompt,
-          maxTokens,
-          languageId
-        );
+        return await this.getOpenAICodeCompletionOptimized(prompt, maxTokens, languageId);
       } catch (error) {
         console.error("OpenAI completion failed:", error);
-        // Don't switch provider for completions - just return empty
-        // This keeps completions fast and non-disruptive
         return "";
       }
     } else {
     //   await this.initializeLocalAI();
       return await this.localAI!.generateCompletion(prompt, context, maxTokens);
+    }
+  }
+
+  private async generateCompletionLegacy(
+    prompt: string,
+    context: string,
+    maxTokens: number = 100,
+    languageId?: string
+  ): Promise<string> {
+    // Your existing generateCompletion logic
+    if (this.currentProvider === "openai" && this.isOpenAIConfigured()) {
+      try {
+        return await this.getOpenAICodeCompletion(prompt, maxTokens, languageId);
+      } catch (error) {
+        console.error("OpenAI completion failed:", error);
+        return "";
+      }
+    } else {
+      return await this.localAI!.generateCompletion(prompt, context, maxTokens);
+    }
+  }
+
+  private async getOpenAICodeCompletionOptimized(
+    structuredPrompt: string,
+    maxTokens: number,
+    languageId?: string
+  ): Promise<string> {
+    try {
+      console.log('OpenAI optimized completion for:', languageId);
+      
+      // Extract the key parts from structured prompt
+      const systemMessage = `You are an expert ${languageId || 'code'} completion assistant. 
+Complete the code at <CURSOR> position following these rules:
+1. Follow the existing code style exactly
+2. Use the provided imports, variables, and types
+3. Match the patterns used in the codebase
+4. Be concise and contextually appropriate
+5. Do NOT add explanations or markdown
+6. Do NOT repeat the given code`;
+
+      const messages = [
+        {
+          role: 'system',
+          content: systemMessage
+        },
+        {
+          role: 'user',
+          content: structuredPrompt
+        }
+      ];
+      
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.openaiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.codeModel || this.config.model || 'gpt-3.5-turbo',
+          messages: messages,
+          max_tokens: maxTokens,
+          temperature: 0.1,  // Very low for consistent completions
+          top_p: 0.9,
+          frequency_penalty: 0.5,  // Reduce repetition
+          presence_penalty: 0.5,   // Encourage variety
+          stop: ['\n\n', '```', '// End', '/* End', '<CURSOR>'],
+          n: 1
+        }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeout);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('OpenAI error:', errorText);
+        return '';
+      }
+      
+      const data = await response.json();
+      const completion = (data as { choices?: { message?: { content: string } }[] })
+        .choices?.[0]?.message?.content || '';
+      
+      return this.cleanCompletionResponse(completion);
+      
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.debug('Completion timed out');
+      } else {
+        console.error('OpenAI completion error:', error);
+      }
+      return '';
     }
   }
 
@@ -184,10 +289,21 @@ export class ModelService {
     context: string,
     languageId: string
   ): Promise<string> {
+    // Create cache key for explanations
+    const cacheKey = `explain:${languageId}:${code.substring(0, 50)}`;
+    
+    // Check cache first
+    const cached = await this.cache.get(cacheKey, { code, languageId }, 'explain');
+    if (cached) {
+      console.log("Using cached explanation");
+      return cached;
+    }
+
+    let explanation: string = "";
     if (this.isOpenAIConfigured()) {
       try {
         console.log("Using OpenAI for code explanation");
-        return await this.explainWithOpenAI(code, context, languageId);
+        explanation = await this.explainWithOpenAI(code, context, languageId);
       } catch (error) {
         console.error("OpenAI failed:", error);
         throw error; // Don't fall back to local if OpenAI is configured
@@ -197,8 +313,19 @@ export class ModelService {
         this.localAI = new LocalAIProvider(this.context);
         await this.localAI.initialize();
       }
-      return await this.localAI.explainCode(code, context);
+      explanation = await this.localAI.explainCode(code, context);
     }
+    // Cache the explanation
+    if (explanation) {
+      await this.cache.set(cacheKey, explanation, { code, languageId }, {
+        feature: 'explain',
+        language: languageId,
+        modelUsed: this.getCurrentProvider(),
+        ttl: 300000 // 5 minutes
+      });
+    }
+
+    return explanation;
   }
 
   private async explainWithOpenAI(
@@ -255,23 +382,36 @@ export class ModelService {
     context: string,
     languageId?: string
   ): Promise<string> {
+    // Build context object for prompt template
+    const extractedContext: Partial<ExtractedContext> = {
+      language: languageId || 'javascript',
+      fileName: 'current-file',
+      relativePath: '',
+      prefix: '',
+      suffix: '',
+      imports: [],
+      relatedSymbols: [],
+      localVariables: [],
+      availableTypes: [],
+      extractionTime: 0,
+      contextSize: code.length
+    };
+
+    // Use prompt template for better structure
+    const structuredPrompt = this.promptTemplates.refactorPrompt(
+      code,
+      extractedContext as ExtractedContext,
+      { includeExamples: false }
+    );
     if (this.isOpenAIConfigured()) {
-      const prompt = `Refactor this ${languageId || "code"}${
-        instruction ? ` to ${instruction}` : ""
-      }:\n\n${code}\n\nReturn only the refactored code without any markdown or explanations:`;
-      const response = await this.chatWithOpenAI(prompt, context);
+      const response = await this.chatWithOpenAI(structuredPrompt, context);
       return this.cleanCodeResponse(response);
     } else {
       if (!this.localAI) {
         this.localAI = new LocalAIProvider(this.context);
         await this.localAI.initialize();
       }
-      return await this.localAI.refactorCode(
-        code,
-        instruction,
-        context,
-        languageId
-      );
+      return await this.localAI.refactorCode(code, instruction, context, languageId);
     }
   }
 
@@ -281,12 +421,29 @@ export class ModelService {
     context: string,
     languageId?: string
   ): Promise<string> {
+    // Build context object
+    const extractedContext: Partial<ExtractedContext> = {
+      language: languageId || 'javascript',
+      fileName: 'test-file',
+      relativePath: '',
+      prefix: '',
+      suffix: '',
+      imports: [],
+      relatedSymbols: [],
+      localVariables: [],
+      availableTypes: [],
+      extractionTime: 0,
+      contextSize: code.length
+    };
+
+    // Use prompt template
+    const structuredPrompt = this.promptTemplates.testPrompt(
+      code,
+      extractedContext as ExtractedContext,
+      { includeExamples: true }
+    );
     if (this.isOpenAIConfigured()) {
-      const testFramework = this.getTestFramework(languageId || "javascript");
-      const prompt = `Generate comprehensive unit tests using ${testFramework} for this ${
-        languageId || "code"
-      }:\n\n${code}\n\nProvide complete test code without markdown formatting:`;
-      const response = await this.chatWithOpenAI(prompt, context);
+      const response = await this.chatWithOpenAI(structuredPrompt, context);
       return this.cleanCodeResponse(response);
     } else {
       if (!this.localAI) {
@@ -295,6 +452,16 @@ export class ModelService {
       }
       return await this.localAI.generateTests(code, context);
     }
+  }
+
+  getCacheStatistics() {
+    return this.cache.getStatistics();
+  }
+
+  // NEW: Method to clear all caches
+  clearAllCaches() {
+    this.cache.clear();
+    console.log("All caches cleared");
   }
 
   // Fix errors - add languageId parameter

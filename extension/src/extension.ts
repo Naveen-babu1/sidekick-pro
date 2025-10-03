@@ -10,6 +10,10 @@ import { CodeFixHandler } from "./providers/CodeFixHandler";
 import { ModelService } from "./services/modelService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { CopilotStyleChatProvider } from "./providers/CopilotStyleChatProvider";
+import { ContextExtractor } from "./services/ContextExtractor";
+import { SmartCache } from "./services/SmartCache";
+import { PromptTemplates } from "./services/PromptTemplates";
+
 
 // Chat Panel Class - Creates a webview panel on the right side
 class ChatPanel {
@@ -817,6 +821,10 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize ModelService FIRST for OpenAI
   const modelService = new ModelService(context);
 
+  const contextExtractor = ContextExtractor.getInstance();
+  const smartCache = SmartCache.getInstance();
+  const promptTemplates = PromptTemplates.getInstance();
+  console.log("Core services initialized: ContextExtractor, SmartCache, PromptTemplates");
   // Check/create .env file for OpenAI configuration
   const fsSync = require("fs");
   const envPath = path.join(__dirname, "..", "..", ".env");
@@ -1308,10 +1316,23 @@ Provide a brief explanation and how to fix it:`;
         return;
       }
 
+      // NEW: Extract full context using ContextExtractor
+      const extractedContext = await contextExtractor.extractContext(
+        editor.document, 
+        selection.start
+      );
+      
+      // NEW: Use PromptTemplates to build structured prompt
+      const structuredPrompt = promptTemplates.explainPrompt(
+        selectedText,
+        extractedContext,
+        { style: 'educational' }
+      );
+
       // Show loading indicator inline
       const loadingDecoration = vscode.window.createTextEditorDecorationType({
         after: {
-          contentText: "  🔄 Getting AI explanation...",
+          contentText: `  🔄 Getting AI explanation (found ${extractedContext.relatedSymbols.length} related symbols)...`,
           color: "rgba(255, 255, 255, 0.5)",
           fontStyle: "italic",
         },
@@ -1324,15 +1345,11 @@ Provide a brief explanation and how to fix it:`;
       ]);
 
       try {
-        const fileContext = indexer.getContext();
-        const languageId = editor.document.languageId;
+        //const fileContext = indexer.getContext();
+        //const languageId = editor.document.languageId;
 
         // Get explanation from ModelService
-        const explanation = await modelService.explainCode(
-          selectedText,
-          fileContext,
-          languageId
-        );
+        const explanation = await modelService.chat(structuredPrompt, '');
 
         // Clear loading decoration
         editor.setDecorations(loadingDecoration, []);
@@ -1840,32 +1857,56 @@ Completion System Status:
     completionStatusBar.show();
 
     // Update every 5 seconds
-    setInterval(updateCompletionStatusBar, 5000);
+    setInterval(() => {
+    const cacheStats = smartCache.getStatistics();
+    if (cacheStats.hitRate < 0.3 && cacheStats.totalRequests > 10) {
+      console.warn("Low cache hit rate:", (cacheStats.hitRate * 100).toFixed(2) + "%");
+    }
+  }, 30000);
+
+  context.subscriptions.push({
+    dispose: () => {
+      smartCache.clear();
+      console.log("Caches cleared on deactivation");
+    }
+  });
   }
   function updateCompletionStatusBar() {
     const stats = completionProvider.getStats();
+    const cacheStats = smartCache.getStatistics();
     const requestsPerMin = stats.requestsThisMinute;
+    const hitRate = cacheStats.hitRate;
 
     // Color code based on usage
     let icon = "$(pulse)";
     let color = "";
+    let statusText = "";
 
-    if (requestsPerMin === 0) {
+    if (hitRate > 0.7) {
+      // Excellent - mostly using cache
+      icon = "$(zap)";
+      statusText = `${icon} ${(hitRate * 100).toFixed(0)}% cache`;
+      color = ""; // Default green
+    } else if (requestsPerMin === 0) {
       icon = "$(circle-slash)";
-      color = "statusBarItem.warningBackground";
+      statusText = `${icon} Idle`;
+      color = "";
     } else if (requestsPerMin < 10) {
       icon = "$(pulse)";
-      color = ""; // Default color
+      statusText = `${icon} ${requestsPerMin}/20 API`;
+      color = "";
     } else if (requestsPerMin < 15) {
       icon = "$(warning)";
+      statusText = `${icon} ${requestsPerMin}/20 API`;
       color = "statusBarItem.warningBackground";
     } else {
       icon = "$(alert)";
+      statusText = `${icon} ${requestsPerMin}/20 API`;
       color = "statusBarItem.errorBackground";
     }
 
-    completionStatusBar.text = `${icon} ${requestsPerMin}/20`;
-    completionStatusBar.tooltip = `API Requests: ${requestsPerMin}/20 this minute\nCache: ${stats.cacheSize} entries\nClick for details`;
+    completionStatusBar.text = statusText;
+    completionStatusBar.tooltip = `Cache Hit Rate: ${(hitRate * 100).toFixed(1)}%\nAPI Requests: ${requestsPerMin}/20\nMemory Cache: ${cacheStats.memoryCacheSize} entries\nPattern Cache: ${cacheStats.patternCacheSize} patterns\nClick for details`;
 
     if (color) {
       completionStatusBar.backgroundColor = new vscode.ThemeColor(color);
@@ -1877,6 +1918,102 @@ Completion System Status:
   updateCompletionStatusBar();
   // completionStatusBar.show();
   // context.subscriptions.push(completionStatusBar);
+
+  // View cache contents
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sidekick-pro.viewCache", async () => {
+      const cacheStats = smartCache.getStatistics();
+      const panel = vscode.window.createWebviewPanel(
+        'cacheView',
+        'Sidekick Pro Cache',
+        vscode.ViewColumn.One,
+        {}
+      );
+      
+      panel.webview.html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { 
+              font-family: var(--vscode-font-family); 
+              padding: 20px; 
+              color: var(--vscode-foreground);
+              background: var(--vscode-editor-background);
+            }
+            .stat { 
+              margin: 10px 0; 
+              padding: 10px; 
+              background: var(--vscode-input-background);
+              border-radius: 5px;
+            }
+            .good { color: #4CAF50; }
+            .warning { color: #FF9800; }
+            .info { color: #2196F3; }
+          </style>
+        </head>
+        <body>
+          <h1>🚀 Sidekick Pro Cache Performance</h1>
+          
+          <h2>Overall Performance</h2>
+          <div class="stat">
+            <strong>Cache Hit Rate:</strong> 
+            <span class="${cacheStats.hitRate > 0.5 ? 'good' : 'warning'}">
+              ${(cacheStats.hitRate * 100).toFixed(2)}%
+            </span>
+          </div>
+          
+          <div class="stat">
+            <strong>Total Hits:</strong> ${cacheStats.totalHits}
+          </div>
+          
+          <div class="stat">
+            <strong>Total Requests:</strong> ${cacheStats.totalRequests}
+          </div>
+          
+          <h2>Cache Contents</h2>
+          <div class="stat">
+            <strong>Memory Cache Entries:</strong> ${cacheStats.memoryCacheSize}
+          </div>
+          
+          <div class="stat">
+            <strong>Pattern Cache Entries:</strong> ${cacheStats.patternCacheSize}
+          </div>
+          
+          <h2>Performance Impact</h2>
+          <div class="stat info">
+            <strong>Estimated Time Saved:</strong> 
+            ~${(cacheStats.totalHits * 0.3).toFixed(1)} seconds
+          </div>
+          
+          <div class="stat info">
+            <strong>API Calls Saved:</strong> ${cacheStats.totalHits}
+          </div>
+          
+          <div class="stat info">
+            <strong>Estimated Cost Saved:</strong> 
+            $${(cacheStats.totalHits * 0.0001).toFixed(4)}
+          </div>
+        </body>
+        </html>
+      `;
+    })
+  );
+
+  // Clear specific document cache
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sidekick-pro.clearDocumentCache", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        smartCache.clearDocument(editor.document);
+        contextExtractor.clearDocumentCache(editor.document);
+        vscode.window.showInformationMessage(
+          `Cache cleared for ${path.basename(editor.document.fileName)}`
+        );
+      }
+    })
+  );
+
 
   vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("sidekickPro.enableCompletions")) {
@@ -1942,27 +2079,34 @@ Completion System Status:
     "sidekick-pro.completionStats",
     () => {
       const stats = completionProvider.getStats();
+      const cacheStats = smartCache.getStatistics();
       const message = `
 Completion Statistics:
-• Cache Size: ${stats.cacheSize} entries
-• Pending Requests: ${stats.pendingRequests}
-• Requests This Minute: ${stats.requestsThisMinute}/20
-• Cache Hit Rate: ${
-        stats.cacheSize > 0
-          ? (
-              ((stats.cacheSize - stats.pendingRequests) / stats.cacheSize) *
-              100
-            ).toFixed(2)
-          : "N/A"
-      }%
-        `.trim();
+• Cache Hit Rate: ${(cacheStats.hitRate * 100).toFixed(2)}%
+• Memory Cache: ${cacheStats.memoryCacheSize} entries
+• Pattern Cache: ${cacheStats.patternCacheSize} entries
+• Total Hits: ${cacheStats.totalHits}
+• API Requests This Minute: ${stats.requestsThisMinute}/${stats.maxRequestsPerMinute}
+• Quick Patterns Learned: ${cacheStats.patternCacheSize}
+      `.trim();
 
       vscode.window
-        .showInformationMessage(message, "Clear Cache", "Close")
+        .showInformationMessage(message, "Clear Cache", "Cache Details", "Close")
         .then((selection) => {
           if (selection === "Clear Cache") {
+            smartCache.clear();
             completionProvider.clearCache();
-            vscode.window.showInformationMessage("Cache cleared!");
+            vscode.window.showInformationMessage("All Cache cleared!");
+          } else if (selection === "Cache Details") {
+            // Show detailed cache info
+            const detailMessage = `
+Cache Performance:
+• Hit Rate: ${(cacheStats.hitRate * 100).toFixed(2)}%
+• Memory Usage: ~${((cacheStats.memoryCacheSize * 0.001)).toFixed(2)}MB
+• Patterns Learned: ${cacheStats.patternCacheSize}
+• Avg Response Time: <50ms (cached) vs 200-500ms (API)
+            `.trim();
+            vscode.window.showInformationMessage(detailMessage);
           }
         });
     }
