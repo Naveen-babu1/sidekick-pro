@@ -349,7 +349,60 @@
           "minimum": 1,
           "maximum": 20,
           "description": "Number of context lines to send with completion requests"
+        },
+        "sidekickPro.autocomplete.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-powered autocomplete"
+        },
+        "sidekickPro.autocomplete.debounceDelay": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 500,
+          "maximum": 3000,
+          "description": "Delay in milliseconds before making completion request"
+        },
+        "sidekickPro.autocomplete.minRequestInterval": {
+          "type": "number",
+          "default": 500,
+          "minimum": 200,
+          "maximum": 2000,
+          "description": "Minimum time between API requests in milliseconds"
+        },
+        "sidekickPro.autocomplete.maxRequestsPerMinute": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "maximum": 30,
+          "description": "Maximum API requests per minute"
+        },
+        "sidekickPro.autocomplete.temperature": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Model temperature for completions (lower = more deterministic)"
+        },
+        "sidekickPro.autocomplete.cacheTimeout": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 10000,
+          "maximum": 300000,
+          "description": "Cache timeout in milliseconds"
+        },
+        "sidekickPro.autocomplete.enablePatternMatching": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable instant pattern-based completions (no API calls)"
+        },
+        "sidekickPro.autocomplete.minPrefixLength": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Minimum characters before triggering autocomplete"
         }
+        
       }
     }
   },

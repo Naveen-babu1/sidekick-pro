@@ -19,6 +19,14 @@ export class ModelService {
   private cache = SmartCache.getInstance();
   private promptTemplates = PromptTemplates.getInstance();
 
+  // Add performance metrics
+  private metrics = {
+    apiCalls: 0,
+    cacheHits: 0,
+    totalRequests: 0,
+    avgResponseTime: 0
+  };
+
   constructor(private context: vscode.ExtensionContext) {
     this.context = context;
     this.loadEnvironment();
@@ -120,8 +128,8 @@ export class ModelService {
     this.config = {
       provider: process.env.DEFAULT_MODEL_PROVIDER || "openai",
       openaiKey: process.env.OPENAI_API_KEY || "",
-      model: process.env.DEFAULT_MODEL_NAME || "gpt-3.5-turbo",
-      codeModel: process.env.CODE_MODEL_NAME || "gpt-3.5-turbo",
+      model: process.env.DEFAULT_MODEL_NAME || "gpt-4o-mini",
+      codeModel: process.env.CODE_MODEL_NAME || "gpt-4o-mini",
       temperature: parseFloat(process.env.MODEL_TEMPERATURE || "0.7"),
       completionMaxTokens: parseInt(process.env.COMPLETION_MAX_TOKENS || '100'),
       completionTemperature: parseFloat(process.env.COMPLETION_TEMPERATURE || '0.2')
@@ -162,28 +170,70 @@ export class ModelService {
     maxTokens: number = 100,
     languageId?: string
   ): Promise<string> {
+    const startTime = Date.now();
+    this.metrics.totalRequests++;
     // For completions, we want them to be FAST
     // Use a simpler prompt format for better speed
     // Check if this is a structured prompt from PromptTemplates
     const isStructuredPrompt = prompt.includes('Language:') && prompt.includes('Current context:');
     
-    // If not structured, keep backward compatibility
-    if (!isStructuredPrompt) {
-      // Legacy path for old callers
-      return this.generateCompletionLegacy(prompt, context, maxTokens, languageId);
+    const cacheKey = `completion:${languageId}:${prompt.substring(0, 100)}`;
+    
+    // Check cache first
+    const cached = await this.cache.get(cacheKey, { prompt, context }, 'completion');
+    if (cached) {
+      this.metrics.cacheHits++;
+      console.log(`Cache hit! (${((this.metrics.cacheHits / this.metrics.totalRequests) * 100).toFixed(1)}% hit rate)`);
+      return cached;
     }
-
+    
+    let result: string;
+    
     if (this.currentProvider === "openai" && this.isOpenAIConfigured()) {
       try {
-        return await this.getOpenAICodeCompletionOptimized(prompt, maxTokens, languageId);
+        this.metrics.apiCalls++;
+        
+        if (isStructuredPrompt) {
+          result = await this.getOpenAICodeCompletionOptimized(prompt, maxTokens, languageId);
+        } else {
+          // Legacy path
+          result = await this.getOpenAICodeCompletion(prompt, maxTokens, languageId);
+        }
       } catch (error) {
         console.error("OpenAI completion failed:", error);
-        return "";
+        // Try fallback to local if available
+        if (this.localAI) {
+          result = await this.localAI.generateCompletion(prompt, context, maxTokens);
+        } else {
+          result = "";
+        }
       }
     } else {
-    //   await this.initializeLocalAI();
-      return await this.localAI!.generateCompletion(prompt, context, maxTokens);
+      if (!this.localAI) {
+        await this.initializeLocalAI();
+      }
+      result = await this.localAI!.generateCompletion(prompt, context, maxTokens);
     }
+    
+    // Cache successful results
+    if (result) {
+      await this.cache.set(cacheKey, result, { prompt, context }, {
+        feature: 'completion',
+        language: languageId || 'unknown',
+        modelUsed: this.currentProvider,
+        ttl: 60000 // 1 minute for completions
+      });
+    }
+    
+    // Update metrics
+    const responseTime = Date.now() - startTime;
+    this.metrics.avgResponseTime = 
+      (this.metrics.avgResponseTime * (this.metrics.totalRequests - 1) + responseTime) / 
+      this.metrics.totalRequests;
+    
+    console.log(`Response time: ${responseTime}ms, Cache hit rate: ${((this.metrics.cacheHits / this.metrics.totalRequests) * 100).toFixed(1)}%`);
+    
+    return result;
   }
 
   private async generateCompletionLegacy(
@@ -219,9 +269,11 @@ Complete the code at <CURSOR> position following these rules:
 1. Follow the existing code style exactly
 2. Use the provided imports, variables, and types
 3. Match the patterns used in the codebase
-4. Be concise and contextually appropriate
-5. Do NOT add explanations or markdown
-6. Do NOT repeat the given code`;
+4. When you see Current context:, provide ONLY what should come after that point.
+Do not repeat any code that comes before Current context:.
+5. Be concise and contextually appropriate
+6. Do NOT add explanations or markdown
+7. Do NOT repeat the given code`;
 
       const messages = [
         {
@@ -244,7 +296,7 @@ Complete the code at <CURSOR> position following these rules:
           'Authorization': `Bearer ${this.config.openaiKey}`
         },
         body: JSON.stringify({
-          model: this.config.codeModel || this.config.model || 'gpt-3.5-turbo',
+          model: this.config.codeModel || this.config.model || 'gpt-4o-mini',
           messages: messages,
           max_tokens: maxTokens,
           temperature: 0.1,  // Very low for consistent completions
@@ -290,30 +342,55 @@ Complete the code at <CURSOR> position following these rules:
     languageId: string
   ): Promise<string> {
     // Create cache key for explanations
-    const cacheKey = `explain:${languageId}:${code.substring(0, 50)}`;
+    const extractedContext: Partial<ExtractedContext> = {
+      language: languageId,
+      prefix: code,
+      suffix: '',
+      fileName: 'current-file',
+      relativePath: '',
+      imports: [],
+      relatedSymbols: [],
+      localVariables: [],
+      availableTypes: [],
+      extractionTime: 0,
+      contextSize: code.length
+    };
     
-    // Check cache first
+    // Use prompt template for better structure
+    const prompt = this.promptTemplates.explainPrompt(
+      code,
+      extractedContext as ExtractedContext,
+      { style: 'concise' }
+    );
+    
+    // Create cache key
+    const cacheKey = `explain:${languageId}:${code.substring(0, 100)}`;
+    
+    // Check cache
     const cached = await this.cache.get(cacheKey, { code, languageId }, 'explain');
     if (cached) {
       console.log("Using cached explanation");
       return cached;
     }
-
-    let explanation: string = "";
+    
+    let explanation: string;
+    
     if (this.isOpenAIConfigured()) {
       try {
-        console.log("Using OpenAI for code explanation");
         explanation = await this.explainWithOpenAI(code, context, languageId);
       } catch (error) {
         console.error("OpenAI failed:", error);
-        throw error; // Don't fall back to local if OpenAI is configured
+        if (this.localAI) {
+          explanation = await this.localAI.explainCode(code, context);
+        } else {
+          throw error;
+        }
       }
     } else {
       if (!this.localAI) {
-        this.localAI = new LocalAIProvider(this.context);
-        await this.localAI.initialize();
+        await this.initializeLocalAI();
       }
-      explanation = await this.localAI.explainCode(code, context);
+      explanation = await this.localAI!.explainCode(code, context);
     }
     // Cache the explanation
     if (explanation) {
@@ -326,6 +403,14 @@ Complete the code at <CURSOR> position following these rules:
     }
 
     return explanation;
+  }
+
+  // Add method to initialize local AI if needed
+  private async initializeLocalAI(): Promise<void> {
+    if (!this.localAI) {
+      this.localAI = new LocalAIProvider(this.context);
+      await this.localAI.initialize();
+    }
   }
 
   private async explainWithOpenAI(
@@ -383,13 +468,15 @@ Complete the code at <CURSOR> position following these rules:
     languageId?: string
   ): Promise<string> {
     // Build context object for prompt template
-    const extractedContext: Partial<ExtractedContext> = {
+    const extractedContext: ExtractedContext = {
       language: languageId || 'javascript',
       fileName: 'current-file',
       relativePath: '',
-      prefix: '',
+      prefix: code,
       suffix: '',
       imports: [],
+      currentFunction: undefined,
+      currentClass: undefined,
       relatedSymbols: [],
       localVariables: [],
       availableTypes: [],
@@ -398,13 +485,24 @@ Complete the code at <CURSOR> position following these rules:
     };
 
     // Use prompt template for better structure
-    const structuredPrompt = this.promptTemplates.refactorPrompt(
+    const prompt = this.promptTemplates.refactorPrompt(
       code,
-      extractedContext as ExtractedContext,
+      extractedContext,
       { includeExamples: false }
     );
+    
+    // Create cache key
+    const cacheKey = `refactor:${languageId}:${instruction}:${code.substring(0, 100)}`;
+    
+    // Check cache
+    const cached = await this.cache.get(cacheKey, { code, instruction }, 'refactor');
+    if (cached) {
+      return cached;
+    }
+    
+    let result: string;
     if (this.isOpenAIConfigured()) {
-      const response = await this.chatWithOpenAI(structuredPrompt, context);
+      const response = await this.chatWithOpenAI(prompt, context);
       return this.cleanCodeResponse(response);
     } else {
       if (!this.localAI) {
@@ -412,6 +510,55 @@ Complete the code at <CURSOR> position following these rules:
         await this.localAI.initialize();
       }
       return await this.localAI.refactorCode(code, instruction, context, languageId);
+    }
+
+    // Cache the result
+    if (result) {
+      await this.cache.set(cacheKey, result, { code, instruction }, {
+        feature: 'refactor',
+        language: languageId || 'unknown',
+        modelUsed: this.currentProvider,
+        ttl: 180000 // 3 minutes for refactoring
+      });
+    }
+    
+    return result;
+  }
+
+  // Add new method for performance stats:
+  getPerformanceMetrics() {
+    const cacheStats = this.cache.getStatistics();
+    return {
+      ...this.metrics,
+      cache: cacheStats,
+      provider: this.currentProvider,
+      isConfigured: this.currentProvider === 'openai' ? this.isOpenAIConfigured() : true
+    };
+  }
+
+  // Add method to pre-warm the cache with common patterns:
+  async prewarmCache(): Promise<void> {
+    console.log("Pre-warming cache with common patterns...");
+    
+    const commonPatterns = [
+      { prompt: 'if (', language: 'javascript' },
+      { prompt: 'for (', language: 'javascript' },
+      { prompt: 'const ', language: 'javascript' },
+      { prompt: 'def ', language: 'python' },
+      { prompt: 'class ', language: 'python' },
+    ];
+    
+    for (const pattern of commonPatterns) {
+      const cacheKey = `pattern:${pattern.language}:${pattern.prompt}`;
+      const completion = await this.getQuickCompletion(pattern.prompt, pattern.language);
+      if (!completion) continue;
+      
+      await this.cache.set(cacheKey, completion, pattern, {
+        feature: 'pattern',
+        language: pattern.language,
+        modelUsed: 'quick-pattern',
+        ttl: 3600000 // 1 hour for patterns
+      });
     }
   }
 
@@ -568,7 +715,7 @@ Rules:
                 'Authorization': `Bearer ${this.config.openaiKey}`
             },
             body: JSON.stringify({
-                model: this.config.codeModel || this.config.model || 'gpt-3.5-turbo',
+                model: this.config.codeModel || this.config.model || 'gpt-4o-mini',
                 messages: messages,
                 max_tokens: maxTokens,
                 temperature: 0.1,  // Very low for consistent completions
