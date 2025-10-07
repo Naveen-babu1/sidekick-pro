@@ -959,6 +959,230 @@ MODEL_TEMPERATURE=0.7
     99
   );
 
+  function getMetricsWebview(
+  stats: any,
+  modelMetrics: any,
+  cacheStats: any
+): string {
+  const hitRatePercent = stats.cacheHitRate * 100;
+  const avgResponseTime = modelMetrics.avgResponseTime.toFixed(0);
+  
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <style>
+      body {
+        font-family: var(--vscode-font-family);
+        padding: 20px;
+        color: var(--vscode-foreground);
+        background: var(--vscode-editor-background);
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+        margin-top: 20px;
+      }
+      .metric-card {
+        background: var(--vscode-input-background);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid var(--vscode-input-border);
+      }
+      .metric-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: var(--vscode-textLink-foreground);
+        margin: 10px 0;
+      }
+      .metric-label {
+        font-size: 12px;
+        opacity: 0.8;
+        text-transform: uppercase;
+      }
+      .metric-desc {
+        font-size: 11px;
+        opacity: 0.6;
+        margin-top: 5px;
+      }
+      h1 {
+        border-bottom: 2px solid var(--vscode-input-border);
+        padding-bottom: 10px;
+      }
+      h2 {
+        margin-top: 30px;
+        opacity: 0.9;
+      }
+      .status-good { color: #4caf50; }
+      .status-warning { color: #ff9800; }
+      .status-bad { color: #f44336; }
+      .chart {
+        height: 200px;
+        background: var(--vscode-input-background);
+        border-radius: 8px;
+        padding: 20px;
+        margin: 20px 0;
+        display: flex;
+        align-items: flex-end;
+        gap: 5px;
+      }
+      .bar {
+        flex: 1;
+        background: var(--vscode-textLink-foreground);
+        border-radius: 4px 4px 0 0;
+        min-height: 20px;
+        position: relative;
+      }
+      .bar-label {
+        position: absolute;
+        bottom: -20px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      .actions {
+        margin-top: 30px;
+        display: flex;
+        gap: 10px;
+      }
+      button {
+        padding: 8px 16px;
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: var(--vscode-button-hoverBackground);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🚀 Sidekick Pro Performance Metrics</h1>
+    
+    <h2>Real-time Performance</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Cache Hit Rate</div>
+        <div class="metric-value ${hitRatePercent > 60 ? 'status-good' : hitRatePercent > 30 ? 'status-warning' : 'status-bad'}">
+          ${hitRatePercent.toFixed(1)}%
+        </div>
+        <div class="metric-desc">Higher is better (target: >60%)</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Requests/Min</div>
+        <div class="metric-value">${stats.requestsThisMinute}/${stats.maxRequestsPerMinute}</div>
+        <div class="metric-desc">Current API usage</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Avg Response Time</div>
+        <div class="metric-value">${avgResponseTime}ms</div>
+        <div class="metric-desc">Including cache hits</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Active Requests</div>
+        <div class="metric-value">${stats.activeRequests}</div>
+        <div class="metric-desc">Currently processing</div>
+      </div>
+    </div>
+    
+    <h2>Cache Statistics</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Memory Cache</div>
+        <div class="metric-value">${cacheStats.memoryCacheSize}</div>
+        <div class="metric-desc">Entries in memory</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Pattern Cache</div>
+        <div class="metric-value">${cacheStats.patternCacheSize}</div>
+        <div class="metric-desc">Learned patterns</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Total Cache Hits</div>
+        <div class="metric-value">${cacheStats.totalHits}</div>
+        <div class="metric-desc">Since activation</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">API Calls Saved</div>
+        <div class="metric-value">${modelMetrics.cacheHits}</div>
+        <div class="metric-desc">By using cache</div>
+      </div>
+    </div>
+    
+    <h2>Rejection Tracking</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Consecutive Rejections</div>
+        <div class="metric-value ${stats.consecutiveRejections > 3 ? 'status-bad' : 'status-good'}">
+          ${stats.consecutiveRejections}
+        </div>
+        <div class="metric-desc">Resets on acceptance</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Rejected Patterns</div>
+        <div class="metric-value">${stats.rejectedPatterns}</div>
+        <div class="metric-desc">Unique rejection signatures</div>
+      </div>
+    </div>
+    
+    <h2>Model Configuration</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Provider</div>
+        <div class="metric-value">${modelMetrics.provider}</div>
+        <div class="metric-desc">${modelMetrics.isConfigured ? '✅ Configured' : '❌ Not configured'}</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Total API Calls</div>
+        <div class="metric-value">${modelMetrics.apiCalls}</div>
+        <div class="metric-desc">Since activation</div>
+      </div>
+    </div>
+    
+    <div class="chart">
+      <div class="bar" style="height: ${Math.min(100, hitRatePercent)}%">
+        <div class="bar-label">Cache</div>
+      </div>
+      <div class="bar" style="height: ${Math.min(100, (stats.requestsThisMinute / stats.maxRequestsPerMinute) * 100)}%">
+        <div class="bar-label">Rate</div>
+      </div>
+      <div class="bar" style="height: ${Math.min(100, 100 - (avgResponseTime / 10))}%">
+        <div class="bar-label">Speed</div>
+      </div>
+    </div>
+    
+    <div class="actions">
+      <button onclick="window.location.reload()">🔄 Refresh</button>
+      <button onclick="clearCache()">🗑️ Clear All Caches</button>
+    </div>
+    
+    <script>
+      const vscode = acquireVsCodeApi();
+      
+      function clearCache() {
+        vscode.postMessage({ command: 'clearCache' });
+      }
+      
+      // Auto-refresh every 5 seconds
+      setInterval(() => {
+        window.location.reload();
+      }, 5000);
+    </script>
+  </body>
+  </html>`;
+}
+
   function updateAIStatus() {
     if (modelService.isOpenAIConfigured()) {
       aiStatusBar.text = "$(cloud) OpenAI";
@@ -1046,6 +1270,109 @@ DEFAULT_MODEL_NAME=gpt-3.5-turbo
       }
     })
   );
+
+  // Pre-warm cache on activation
+  await modelService.prewarmCache();
+  
+  // Add performance monitoring status bar
+  const perfStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    98
+  );
+  perfStatusBar.text = "$(pulse) Sidekick: Initializing...";
+  perfStatusBar.tooltip = "Click to see performance metrics";
+  perfStatusBar.command = "sidekick-pro.showMetrics";
+  perfStatusBar.show();
+  context.subscriptions.push(perfStatusBar);
+  
+  // Update status bar every 5 seconds
+  const updateStatusBar = () => {
+    const stats = completionProvider.getStats();
+    const modelMetrics = modelService.getPerformanceMetrics();
+    
+    const hitRate = (stats.cacheHitRate * 100).toFixed(0);
+    // Check if using smart provider (doesn't have requestsThisMinute)
+  const isSmartProvider = !('requestsThisMinute' in stats);
+  
+  let statusText: string;
+  let tooltip: string;
+  
+  if (isSmartProvider) {
+    // Smart provider status
+    const lastTrigger = stats.lastTriggerTime 
+      ? `${Math.round((Date.now() - stats.lastTriggerTime) / 1000)}s ago`
+      : 'Never';
+    
+    statusText = `$(sparkle) Smart: ${hitRate}% cache | Last: ${lastTrigger}`;
+    tooltip = `Smart Completion Provider
+Cache Hit Rate: ${hitRate}%
+Last Trigger: ${lastTrigger}
+Pending Request: ${stats.hasPendingRequest ? 'Yes' : 'No'}
+Cache Size: ${stats.cacheSize}
+Provider: ${modelMetrics.provider}
+Click for details`;
+  } else {
+    // Old provider status
+    const requests = (stats as any).requestsThisMinute || 0;
+    const maxRequests = (stats as any).maxRequestsPerMinute || 15;
+    
+    statusText = `$(pulse) Sidekick: ${hitRate}% cache | ${requests} req/min`;
+    tooltip = `Cache Hit Rate: ${hitRate}%
+Requests This Minute: ${requests}/${maxRequests}
+Active Requests: ${(stats as any).activeRequests || 0}
+Consecutive Rejections: ${(stats as any).consecutiveRejections || 0}
+Provider: ${modelMetrics.provider}
+Click for details`;
+  }
+
+  // Change icon based on performance
+  let icon = "$(pulse)";
+  if (stats.cacheHitRate > 0.6) {
+    icon = "$(check)"; // Good performance
+  } else if (stats.cacheHitRate > 0.3) {
+    icon = "$(info)"; // Medium performance
+  }
+  
+  perfStatusBar.text = statusText.replace('$(sparkle)', icon).replace('$(pulse)', icon);
+  perfStatusBar.tooltip = tooltip;
+};
+  
+  // Initial update after 2 seconds
+  setTimeout(updateStatusBar, 2000);
+  
+  // Then update every 5 seconds
+  const statusInterval = setInterval(updateStatusBar, 5000);
+  context.subscriptions.push({
+    dispose: () => clearInterval(statusInterval)
+  });
+  
+  // Command to show detailed metrics
+  context.subscriptions.push(
+  vscode.commands.registerCommand('sidekick-pro.showMetrics', async () => {
+    const stats = completionProvider.getStats();
+    const modelMetrics = modelService.getPerformanceMetrics();
+    const cacheStats = SmartCache.getInstance().getStatistics();
+    
+    // Check if using smart provider
+    const isSmartProvider = !('requestsThisMinute' in stats);
+    
+    // Create webview panel for metrics
+    const panel = vscode.window.createWebviewPanel(
+      'sidekickMetrics',
+      isSmartProvider ? 'Smart Completion Metrics' : 'Sidekick Pro Performance Metrics',
+      vscode.ViewColumn.Two,
+      {
+        enableScripts: true
+      }
+    );
+    
+    if (isSmartProvider) {
+      panel.webview.html = getSmartMetricsWebview(stats, modelMetrics, cacheStats);
+    } else {
+      panel.webview.html = getMetricsWebview(stats as any, modelMetrics, cacheStats);
+    }
+  })
+);
 
   // Fix error command
   context.subscriptions.push(
@@ -1708,12 +2035,23 @@ Provide a brief explanation and how to fix it:`;
         .get("inlineSuggest.enabled");
       const stats = completionProvider.getStats();
 
+      const hasRequestMetrics =
+        "requestsThisMinute" in stats && "maxRequestsPerMinute" in stats;
+      let requestsLine = "• Requests: Smart trigger mode";
+      if (hasRequestMetrics) {
+        const requestStats = stats as {
+          requestsThisMinute: number;
+          maxRequestsPerMinute: number;
+        };
+        requestsLine = `• Requests: ${requestStats.requestsThisMinute}/${requestStats.maxRequestsPerMinute}`;
+      }
+
       const message = `
 Completion System Status:
 • Inline Suggestions: ${inlineSuggest ? "✅ Enabled" : "❌ DISABLED"}
 • Provider: ${modelService.getCurrentProvider()}
 • Cache Size: ${stats.cacheSize}
-• Requests: ${stats.requestsThisMinute}/${stats.maxRequestsPerMinute}
+${requestsLine}
 • OpenAI: ${
         modelService.isOpenAIConfigured()
           ? "✅ Configured"
@@ -1871,10 +2209,180 @@ Completion System Status:
     }
   });
   }
+function getSmartMetricsWebview(
+  stats: any,
+  modelMetrics: any,
+  cacheStats: any
+): string {
+  const hitRatePercent = stats.cacheHitRate * 100;
+  const hitRatePercentDisplay = hitRatePercent.toFixed(1);
+  const avgResponseTime = modelMetrics.avgResponseTime.toFixed(0);
+  const lastTrigger = stats.lastTriggerTime 
+    ? new Date(stats.lastTriggerTime).toLocaleTimeString()
+    : 'Never';
+  
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <style>
+      body {
+        font-family: var(--vscode-font-family);
+        padding: 20px;
+        color: var(--vscode-foreground);
+        background: var(--vscode-editor-background);
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+        margin-top: 20px;
+      }
+      .metric-card {
+        background: var(--vscode-input-background);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid var(--vscode-input-border);
+      }
+      .metric-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: var(--vscode-textLink-foreground);
+        margin: 10px 0;
+      }
+      .metric-label {
+        font-size: 12px;
+        opacity: 0.8;
+        text-transform: uppercase;
+      }
+      .metric-desc {
+        font-size: 11px;
+        opacity: 0.6;
+        margin-top: 5px;
+      }
+      h1 {
+        border-bottom: 2px solid var(--vscode-input-border);
+        padding-bottom: 10px;
+      }
+      h2 {
+        margin-top: 30px;
+        opacity: 0.9;
+      }
+      .status-good { color: #4caf50; }
+      .status-warning { color: #ff9800; }
+      .status-bad { color: #f44336; }
+      .info-box {
+        background: var(--vscode-textBlockQuote-background);
+        border-left: 3px solid var(--vscode-textLink-foreground);
+        padding: 15px;
+        margin: 20px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🚀 Smart Completion Provider Metrics</h1>
+    
+    <div class="info-box">
+      <strong>Smart Mode Active:</strong> Completions only trigger on meaningful code patterns.
+      <br>No spam, no patterns, just intelligent context-aware suggestions.
+    </div>
+    
+    <h2>Smart Triggers</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Last Trigger</div>
+        <div class="metric-value">${lastTrigger}</div>
+        <div class="metric-desc">When completion was last requested</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Active Request</div>
+        <div class="metric-value">${stats.hasPendingRequest ? 'Yes' : 'No'}</div>
+        <div class="metric-desc">Currently processing</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Cooldown</div>
+        <div class="metric-value">2s</div>
+        <div class="metric-desc">Between triggers</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Debounce</div>
+        <div class="metric-value">1s</div>
+        <div class="metric-desc">After typing stops</div>
+      </div>
+    </div>
+    
+    <h2>Cache Performance</h2>
+      <div class="metric-card">
+        <div class="metric-label">Cache Hit Rate</div>
+        <div class="metric-value ${hitRatePercent > 60 ? 'status-good' : hitRatePercent > 30 ? 'status-warning' : 'status-bad'}">
+          ${hitRatePercentDisplay}%
+        </div>
+        <div class="metric-desc">Higher is better</div>
+      </div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Cache Size</div>
+        <div class="metric-value">${stats.cacheSize}</div>
+        <div class="metric-desc">Stored completions</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Avg Response</div>
+        <div class="metric-value">${avgResponseTime}ms</div>
+        <div class="metric-desc">Including cache hits</div>
+      </div>
+    </div>
+    
+    <h2>Model Configuration</h2>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Provider</div>
+        <div class="metric-value">${modelMetrics.provider}</div>
+        <div class="metric-desc">${modelMetrics.isConfigured ? '✅ Configured' : '❌ Not configured'}</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Total API Calls</div>
+        <div class="metric-value">${modelMetrics.apiCalls}</div>
+        <div class="metric-desc">Since activation</div>
+      </div>
+      
+      <div class="metric-card">
+        <div class="metric-label">Cache Savings</div>
+        <div class="metric-value">${modelMetrics.cacheHits}</div>
+        <div class="metric-desc">API calls avoided</div>
+      </div>
+    </div>
+    
+    <h2>Smart Triggers Include:</h2>
+    <ul>
+      <li>Function declarations needing body</li>
+      <li>Class declarations needing methods</li>
+      <li>TODO/FIXME comments</li>
+      <li>Try blocks needing catch</li>
+      <li>Test cases needing implementation</li>
+      <li>Algorithm implementation from comments</li>
+    </ul>
+    
+    <div class="actions" style="margin-top: 30px;">
+      <button onclick="window.location.reload()" style="padding: 8px 16px;">🔄 Refresh</button>
+    </div>
+  </body>
+  </html>`;
+}
   function updateCompletionStatusBar() {
     const stats = completionProvider.getStats();
     const cacheStats = smartCache.getStatistics();
-    const requestsPerMin = stats.requestsThisMinute;
+    const hasRequestMetrics = "requestsThisMinute" in stats && "maxRequestsPerMinute" in stats;
+    const requestsPerMin = hasRequestMetrics
+      ? (stats as { requestsThisMinute: number }).requestsThisMinute
+      : 0;
+    const maxRequestsPerMinute = hasRequestMetrics
+      ? (stats as { maxRequestsPerMinute: number }).maxRequestsPerMinute
+      : 20;
     const hitRate = cacheStats.hitRate;
 
     // Color code based on usage
@@ -1888,25 +2396,34 @@ Completion System Status:
       statusText = `${icon} ${(hitRate * 100).toFixed(0)}% cache`;
       color = ""; // Default green
     } else if (requestsPerMin === 0) {
-      icon = "$(circle-slash)";
-      statusText = `${icon} Idle`;
+      icon = hasRequestMetrics ? "$(circle-slash)" : "$(sparkle)";
+      statusText = hasRequestMetrics ? `${icon} Idle` : `${icon} Smart mode`;
       color = "";
     } else if (requestsPerMin < 10) {
       icon = "$(pulse)";
-      statusText = `${icon} ${requestsPerMin}/20 API`;
+      statusText = `${icon} ${requestsPerMin}/${maxRequestsPerMinute} API`;
       color = "";
     } else if (requestsPerMin < 15) {
       icon = "$(warning)";
-      statusText = `${icon} ${requestsPerMin}/20 API`;
+      statusText = `${icon} ${requestsPerMin}/${maxRequestsPerMinute} API`;
       color = "statusBarItem.warningBackground";
     } else {
       icon = "$(alert)";
-      statusText = `${icon} ${requestsPerMin}/20 API`;
+      statusText = `${icon} ${requestsPerMin}/${maxRequestsPerMinute} API`;
       color = "statusBarItem.errorBackground";
     }
 
     completionStatusBar.text = statusText;
-    completionStatusBar.tooltip = `Cache Hit Rate: ${(hitRate * 100).toFixed(1)}%\nAPI Requests: ${requestsPerMin}/20\nMemory Cache: ${cacheStats.memoryCacheSize} entries\nPattern Cache: ${cacheStats.patternCacheSize} patterns\nClick for details`;
+    const tooltipLines = [
+      `Cache Hit Rate: ${(hitRate * 100).toFixed(1)}%`,
+      hasRequestMetrics
+        ? `API Requests: ${requestsPerMin}/${maxRequestsPerMinute}`
+        : "Smart Trigger Mode: Active",
+      `Memory Cache: ${cacheStats.memoryCacheSize} entries`,
+      `Pattern Cache: ${cacheStats.patternCacheSize} patterns`,
+      "Click for details",
+    ];
+    completionStatusBar.tooltip = tooltipLines.join("\n");
 
     if (color) {
       completionStatusBar.backgroundColor = new vscode.ThemeColor(color);
@@ -2067,31 +2584,38 @@ Completion System Status:
   //   98
   // );
   // privacyStatusBar.text = "$(shield) Privacy Mode: ON";
-  // privacyStatusBar.tooltip =
-  //   "All AI processing happens locally. Click for privacy report.";
-  // privacyStatusBar.command = "sidekick-ai.privacyStatus";
-  // privacyStatusBar.show();
-
-  // context.subscriptions.push(privacyStatusBar);
-
-  // Register hover provider
   const statsCommand = vscode.commands.registerCommand(
     "sidekick-pro.completionStats",
     () => {
       const stats = completionProvider.getStats();
       const cacheStats = smartCache.getStatistics();
-      const message = `
-Completion Statistics:
-• Cache Hit Rate: ${(cacheStats.hitRate * 100).toFixed(2)}%
-• Memory Cache: ${cacheStats.memoryCacheSize} entries
-• Pattern Cache: ${cacheStats.patternCacheSize} entries
-• Total Hits: ${cacheStats.totalHits}
-• API Requests This Minute: ${stats.requestsThisMinute}/${stats.maxRequestsPerMinute}
-• Quick Patterns Learned: ${cacheStats.patternCacheSize}
-      `.trim();
+      const hasRequestMetrics =
+        "requestsThisMinute" in stats && "maxRequestsPerMinute" in stats;
+      const requestStats = hasRequestMetrics
+        ? (stats as {
+            requestsThisMinute: number;
+            maxRequestsPerMinute: number;
+          })
+        : undefined;
+      const message = [
+        "Completion Statistics:",
+        `• Cache Hit Rate: ${(cacheStats.hitRate * 100).toFixed(2)}%`,
+        `• Memory Cache: ${cacheStats.memoryCacheSize} entries`,
+        `• Pattern Cache: ${cacheStats.patternCacheSize} entries`,
+        `• Total Hits: ${cacheStats.totalHits}`,
+        requestStats
+          ? `• API Requests This Minute: ${requestStats.requestsThisMinute}/${requestStats.maxRequestsPerMinute}`
+          : "• Smart Trigger Mode: Active",
+        `• Quick Patterns Learned: ${cacheStats.patternCacheSize}`,
+      ].join("\n");
 
       vscode.window
-        .showInformationMessage(message, "Clear Cache", "Cache Details", "Close")
+        .showInformationMessage(
+          message,
+          "Clear Cache",
+          "Cache Details",
+          "Close"
+        )
         .then((selection) => {
           if (selection === "Clear Cache") {
             smartCache.clear();
