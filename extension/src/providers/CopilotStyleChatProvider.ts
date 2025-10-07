@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
 import { ModelService } from "../services/modelService";
 import { CodeIndexer } from "../indexer/CodeIndexer";
+import { ContextExtractor, ExtractedContext } from "../services/ContextExtractor";
+import { SmartCache } from "../services/SmartCache";
+import { PromptTemplates } from "../services/PromptTemplates";
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -33,6 +36,10 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   private _messages: ChatMessage[] = [];
   private _currentContext: CodeContext[] = [];
   private _disposables: vscode.Disposable[] = [];
+  private readonly _contextExtractor = ContextExtractor.getInstance();
+  private readonly _smartCache = SmartCache.getInstance();
+  private readonly _promptTemplates = PromptTemplates.getInstance();
+  private _extractedContextCache = new Map<string, ExtractedContext>();
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -42,6 +49,13 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   ) {
     this.loadChatHistory();
   }
+  public focusChat() {
+  if (this._view) {
+    this._view.show?.(true); // true means preserveFocus
+    // Send a focus event to the webview
+    this._view.webview.postMessage({ type: "focus" });
+  }
+}
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -193,35 +207,97 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     let response = "";
     let references: { file: string; lines: string; content?: string }[] = [];
 
+    // Extract context if editor is available
+    let extractedContext: ExtractedContext | undefined;
+    if (editor) {
+      extractedContext = await this._contextExtractor.extractContext(
+        editor.document,
+        editor.selection.active
+      );
+    }
     console.log(
       `Handling command: ${command} with provider: ${this._modelService.getCurrentProvider()}`
     );
     switch (command) {
       case "/explain":
-        if (editor) {
-          const selectedText = editor.selection.isEmpty
-            ? editor.document.getText()
-            : editor.document.getText(editor.selection);
-
-          const explanation = await this._modelService.explainCode(
-            selectedText || text,
-            this.getContextString(),
-            editor.document.languageId
+        if (editor && extractedContext) {
+          // Use PromptTemplates for better explanations
+          const explainPrompt = this._promptTemplates.explainPrompt(
+            editor.selection.isEmpty 
+              ? editor.document.getText()
+              : editor.document.getText(editor.selection),
+            extractedContext,
+            { style: 'detailed' }
           );
-          response = explanation;
-          references = [
-            {
-              file: editor.document.fileName,
-              lines: editor.selection.isEmpty
-                ? `1-${editor.document.lineCount}`
-                : `${editor.selection.start.line + 1}-${
-                    editor.selection.end.line + 1
-                  }`,
-              content: selectedText,
-            },
-          ];
+          
+          // Check cache first
+          const cacheKey = `explain:${extractedContext.fileName}:${editor.selection.start.line}`;
+          const cached = await this._smartCache.get(cacheKey, extractedContext, 'explain');
+          
+          if (cached) {
+            response = cached;
+          } else {
+            response = await this._modelService.chat(explainPrompt, '');
+            
+            // Cache the explanation
+            await this._smartCache.set(cacheKey, response, extractedContext, {
+              feature: 'explain',
+              language: extractedContext.language,
+              modelUsed: this._modelService.getCurrentProvider(),
+              ttl: 3600000 // 1 hour
+            });
+          }
+          references = [{
+            file: extractedContext.fileName,
+            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            content: `Function: ${extractedContext.currentFunction?.name || 'global'}, Class: ${extractedContext.currentClass?.name || 'none'}`
+          }];
         } else {
           response = "No active editor found to explain.";
+        }
+        break;
+      
+      case "/refactor":
+        if (editor && extractedContext) {
+          // Use PromptTemplates for refactoring
+          const refactorPrompt = this._promptTemplates.refactorPrompt(
+            editor.document.getText(editor.selection),
+            extractedContext,
+            { includeExamples: true }
+          );
+          
+          const refactored = await this._modelService.chat(refactorPrompt, '');
+          response = `Here's the refactored code:\n\n\`\`\`${editor.document.languageId}\n${refactored}\n\`\`\``;
+          
+          references = [{
+            file: extractedContext.fileName,
+            lines: `Refactored ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            content: `Improved: ${text || 'code quality and structure'}`
+          }];
+        } else {
+          response = "No active editor found to refactor.";
+        }
+        break;
+      
+      case "/debug":
+        if (editor && extractedContext) {
+          // Use PromptTemplates for debugging when available
+          const debugPrompt = this.buildDebugPrompt(
+            editor.document.getText(editor.selection),
+            text || "Debug this code",
+            extractedContext
+          );
+          
+          const debugSolution = await this._modelService.chat(debugPrompt, '');
+          response = debugSolution;
+          
+          references = [{
+            file: extractedContext.fileName,
+            lines: `Debug analysis for lines ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            content: `Variables in scope: ${extractedContext.localVariables.slice(0, 5).join(', ')}`
+          }];
+        } else {
+          response = "No active editor found to debug.";
         }
         break;
 
@@ -283,23 +359,263 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     return { response, references };
   }
 
-  private async processWithContext(text: string, mentions: string[]) {
-    let contextString = this.getContextString();
-
-    if (mentions.includes("@workspace")) {
-      const workspaceFiles = await this.getWorkspaceContext();
-      contextString += "\n\nWorkspace files:\n" + workspaceFiles;
+  private async processWithContext(
+    text: string,
+    mentions: string[]
+  ): Promise<{
+    response: string;
+    references?: { file: string; lines: string; content?: string }[];
+  }> {
+    const editor = vscode.window.activeTextEditor;
+    let extractedContext: ExtractedContext | undefined;
+    
+    // Use ContextExtractor for richer context
+    if (editor) {
+      extractedContext = await this._contextExtractor.extractContext(
+        editor.document,
+        editor.selection.active
+      );
+      
+      // Cache the extracted context for later use
+      this._extractedContextCache.set(editor.document.uri.toString(), extractedContext);
+    }
+    
+    // Build enhanced context string using extracted context
+    const contextString = this.buildEnhancedContextString(extractedContext, mentions);
+    
+    // Create cache key for response caching
+    const cacheKey = this.createChatCacheKey(text, extractedContext, mentions);
+    
+    // Check SmartCache first
+    const cached = await this._smartCache.get(cacheKey, extractedContext || {}, 'chat');
+    if (cached) {
+      console.log('Using cached chat response');
+      return {
+        response: cached,
+        references: extractedContext ? [{
+          file: extractedContext.fileName,
+          lines: `${editor?.selection.start.line || 1}-${editor?.selection.end.line || 1}`,
+          content: extractedContext.prefix
+        }] : []
+      };
+    }
+    
+    // Determine best prompt template based on query
+    const enhancedPrompt = this.selectAndBuildPrompt(text, extractedContext, contextString);
+    
+    // Get response from model
+    const response = await this._modelService.chat(
+      enhancedPrompt,
+      contextString
+    );
+    
+    // Cache the response
+    await this._smartCache.set(cacheKey, response, extractedContext || {}, {
+      feature: 'chat',
+      language: extractedContext?.language || 'unknown',
+      modelUsed: this._modelService.getCurrentProvider(),
+      ttl: 1800000 // 30 minutes
+    });
+    
+    const references: { file: string; lines: string; content?: string }[] = [];
+    
+    if (extractedContext) {
+      references.push({
+        file: extractedContext.fileName,
+        lines: `Context includes ${extractedContext.localVariables.length} variables, ${extractedContext.imports.length} imports`,
+        content: extractedContext.prefix.substring(0, 200)
+      });
+    }
+    
+    // Add workspace context references if mentioned
+    if (mentions.includes('@workspace')) {
+      const workspaceFiles = await this.fetchRelevantWorkspaceFiles(text);
+      workspaceFiles.slice(0, 3).forEach(file => {
+        if (!file?.path) {
+          return;
+        }
+        references.push({
+          file: file.path,
+          lines: 'Workspace context',
+          content: file.content?.substring(0, 100)
+        });
+      });
+    }
+    
+    return { response, references };
+  }
+  private buildEnhancedContextString(
+    extractedContext: ExtractedContext | undefined,
+    mentions: string[]
+  ): string {
+    let contextParts: string[] = [];
+    
+    if (extractedContext) {
+      contextParts.push(`File: ${extractedContext.fileName}`);
+      contextParts.push(`Language: ${extractedContext.language}`);
+      
+      if (extractedContext.currentFunction) {
+        contextParts.push(`Current Function: ${extractedContext.currentFunction.name}`);
+      }
+      
+      if (extractedContext.currentClass) {
+        contextParts.push(`Current Class: ${extractedContext.currentClass.name}`);
+      }
+      
+      if (extractedContext.localVariables.length > 0) {
+        contextParts.push(`Variables: ${extractedContext.localVariables.slice(0, 10).join(', ')}`);
+      }
+      
+      if (extractedContext.imports.length > 0) {
+        contextParts.push(`Imports: ${extractedContext.imports.slice(0, 5).join(', ')}`);
+      }
+    }
+    
+    // Add existing context from mentions
+    if (mentions.includes('@workspace')) {
+      contextParts.push('Workspace context included');
+    }
+    
+    if (mentions.includes('@file') && this._currentContext.length > 0) {
+      contextParts.push(`Files in context: ${this._currentContext.map(c => c.name).join(', ')}`);
     }
 
-    const response = await this._modelService.chat(text, contextString);
+    return contextParts.join('\n');
+  }
 
-    const references = this._currentContext.map((ctx) => ({
-      file: ctx.path || ctx.name,
-      lines: "Full context",
-      content: (ctx.content ?? "").substring(0, 100) + "...",
-    }));
+  private createChatCacheKey(
+    text: string,
+    context: ExtractedContext | undefined,
+    mentions: string[]
+  ): string {
+    const parts = [
+      'chat',
+      text.substring(0, 50).replace(/\s+/g, '_'),
+      context?.fileName || 'no-file',
+      context?.currentFunction?.name || 'global',
+      mentions.join('-')
+    ];
+    
+    return parts.join(':');
+  }
 
-    return { response, references };
+  private async fetchRelevantWorkspaceFiles(
+    query: string
+  ): Promise<Array<{ path: string; content?: string }>> {
+    const indexer = this._codeIndexer as unknown as {
+      getRelevantFiles?: (q: string) => Promise<Array<{ path: string; content?: string }>>;
+      search?: (q: string) => Promise<Array<{ path: string; content?: string }>>;
+    };
+
+    if (typeof indexer.search === 'function') {
+      return indexer.search(query);
+    }
+
+    return [];
+  }
+
+  private buildDebugPrompt(
+    selectedCode: string,
+    debugRequest: string,
+    extractedContext: ExtractedContext
+  ): string {
+    const templates = this._promptTemplates as unknown as {
+      debugPrompt?: (code: string, request: string, context: ExtractedContext) => string;
+    };
+
+    if (typeof templates.debugPrompt === "function") {
+      return templates.debugPrompt(selectedCode, debugRequest, extractedContext);
+    }
+
+    const contextSummary = [
+      extractedContext.fileName ? `File: ${extractedContext.fileName}` : null,
+      extractedContext.currentClass ? `Class: ${extractedContext.currentClass.name}` : null,
+      extractedContext.currentFunction ? `Function: ${extractedContext.currentFunction.name}` : null,
+      extractedContext.language ? `Language: ${extractedContext.language}` : null,
+      extractedContext.localVariables.length
+        ? `Variables: ${extractedContext.localVariables.slice(0, 10).join(", ")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return [
+      "You are an experienced software engineer who diagnoses bugs.",
+      debugRequest ? `Request: ${debugRequest}` : "Request: Debug this code.",
+      contextSummary ? `Context:\n${contextSummary}` : "",
+      "Code:\n```",
+      selectedCode,
+      "```",
+      "Identify likely issues, explain them, and propose fixes."
+    ].join("\n");
+  }
+
+  // ENHANCEMENT 4: Add method to get chat statistics
+  public getChatStats() {
+    const cacheStats = this._smartCache.getStatistics();
+    
+    return {
+      totalMessages: this._messages.length,
+      cacheHitRate: cacheStats.hitRate,
+      cachedResponses: cacheStats.memoryCacheSize,
+      contextsCached: this._extractedContextCache.size,
+      currentModel: this._modelService.getCurrentProvider()
+    };
+  }
+
+  // ENHANCEMENT 5: Add method to clear caches
+  public clearCaches() {
+    this._smartCache.clear();
+    this._extractedContextCache.clear();
+    console.log('Chat caches cleared');
+  }
+  private selectAndBuildPrompt(
+    query: string,
+    extractedContext: ExtractedContext | undefined,
+    contextString: string
+  ): string {
+    const lowerQuery = query.toLowerCase();
+    
+    // Determine query type and use appropriate template
+    if (extractedContext) {
+      if (lowerQuery.includes('explain')) {
+        return this._promptTemplates.explainPrompt(
+          extractedContext.prefix,
+          extractedContext,
+          { style: 'concise' }
+        );
+      } else if (lowerQuery.includes('refactor') || lowerQuery.includes('improve')) {
+        return this._promptTemplates.refactorPrompt(
+          extractedContext.prefix,
+          extractedContext,
+          { includeExamples: false }
+        );
+      } else if (lowerQuery.includes('debug') || lowerQuery.includes('fix')) {
+        const templates = this._promptTemplates as unknown as {
+          debugPrompt?: (code: string, request: string, context: ExtractedContext) => string;
+        };
+        if (typeof templates.debugPrompt === 'function') {
+          return templates.debugPrompt(
+            extractedContext.prefix,
+            query,
+            extractedContext
+          );
+        }
+        return this.buildDebugPrompt(
+          extractedContext.prefix,
+          query,
+          extractedContext
+        );
+      } else if (lowerQuery.includes('test')) {
+        return this._promptTemplates.testPrompt(
+          extractedContext.prefix,
+          extractedContext
+        );
+      }
+    }
+    
+    // Default prompt with enhanced context
+    return `${query}\n\nContext:\n${contextString}`;
   }
   private async getWorkspaceContext(): Promise<string> {
     const files = await vscode.workspace.findFiles(

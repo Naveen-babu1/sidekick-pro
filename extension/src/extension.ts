@@ -1553,11 +1553,17 @@ Provide a brief explanation and how to fix it:`;
   //     })
   // );
 
-  // context.subscriptions.push(
-  //     vscode.commands.registerCommand('sidekick.chat.open', () => {
-  //         vscode.commands.executeCommand('workbench.view.extension.sidekickPro-chat');
-  //     })
-  // );
+  context.subscriptions.push(
+  vscode.commands.registerCommand("sidekick.chat.open", async () => {
+    // Focus on the CopilotStyle chat view
+    await vscode.commands.executeCommand("sidekickPro.copilotChat.focus");
+    
+    // Optional: Send a welcome message or initialize
+    if (copilotChatProvider) {
+      copilotChatProvider.focusChat();
+    }
+  })
+);
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
