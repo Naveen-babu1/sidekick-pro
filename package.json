@@ -226,21 +226,40 @@
     "configuration": {
       "title": "Sidekick Pro",
       "properties": {
-        "sidekick-pro.openaiKey": {
+        "sidekickPro.preferredProvider": {
+          "type": "string",
+          "enum": ["openai", "local", "claude", "anthropic"],
+          "default": "local",
+          "description": "Preferred AI provider for code assistance",
+          "enumDescriptions": [
+            "OpenAI GPT models",
+            "Local AI (Offline)",
+            "Claude (Anthropic)",
+            "Claude (Anthropic) - Alternative"
+          ]
+        },
+        "sidekickPro.openaiApiKey": {
           "type": "string",
           "default": "",
           "description": "OpenAI API Key",
           "scope": "application"
         },
-        "sidekick-pro.provider": {
+        "sidekickPro.anthropicApiKey": {
           "type": "string",
-          "enum": [
-            "openai",
-            "local"
-          ],
-          "default": "local",
-          "description": "Model provider",
+          "default": "",
+          "description": "Anthropic API Key for Claude",
           "scope": "application"
+        },
+        "sidekickPro.openaiModel": {
+          "type": "string",
+          "enum": ["gpt-4o-mini", "gpt-4", "gpt-3.5-turbo"],
+          "default": "gpt-4o-mini",
+          "description": "OpenAI model to use for chat and completions"
+        },
+        "sidekickPro.enableOpenAI": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable OpenAI API for completions and chat"
         },
         "sidekick-ai.modelPath": {
           "type": "string",
@@ -259,7 +278,7 @@
         },
         "sidekick-ai.contextSize": {
           "type": "number",
-          "default": 4096,
+          "default": 2048,
           "description": "Context size for the model"
         },
         "sidekick-ai.useGpu": {
@@ -274,51 +293,39 @@
         },
         "sidekickPro.completionTriggerDelay": {
           "type": "number",
-          "default": 300,
-          "minimum": 100,
-          "maximum": 2000,
-          "description": "Delay in milliseconds before triggering completions"
+          "default": 500,
+          "description": "Delay in milliseconds before triggering completion"
         },
         "sidekickPro.completionMaxTokens": {
           "type": "number",
-          "default": 100,
-          "minimum": 50,
-          "maximum": 500,
+          "default": 150,
           "description": "Maximum tokens for code completions"
         },
         "sidekickPro.completionTemperature": {
           "type": "number",
-          "default": 0.2,
+          "default": 0.3,
           "minimum": 0,
-          "maximum": 1,
-          "description": "Temperature for completion generation (0 = deterministic, 1 = creative)"
+          "maximum": 2,
+          "description": "Temperature for completion generation (0 = deterministic, 2 = creative)"
         },
         "sidekickPro.completion.debounceDelay": {
           "type": "number",
           "default": 800,
-          "minimum": 300,
-          "maximum": 2000,
-          "description": "Delay in milliseconds before triggering completion after typing stops"
+          "description": "Delay in milliseconds before triggering completion (800ms recommended)"
         },
         "sidekickPro.completion.minCharacters": {
           "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 10,
+          "default": 3,
           "description": "Minimum number of characters before triggering completions"
         },
         "sidekickPro.completion.maxRequestsPerMinute": {
           "type": "number",
-          "default": 20,
-          "minimum": 5,
-          "maximum": 60,
+          "default": 10,
           "description": "Maximum API requests per minute (rate limiting)"
         },
         "sidekickPro.completion.cacheTimeout": {
           "type": "number",
           "default": 60000,
-          "minimum": 10000,
-          "maximum": 300000,
           "description": "Cache timeout in milliseconds (default: 1 minute)"
         },
         "sidekickPro.completion.enableQuickPatterns": {
@@ -339,16 +346,12 @@
         "sidekickPro.completion.requestTimeout": {
           "type": "number",
           "default": 2000,
-          "minimum": 500,
-          "maximum": 5000,
           "description": "Timeout for API requests in milliseconds"
         },
         "sidekickPro.completion.contextLines": {
           "type": "number",
-          "default": 5,
-          "minimum": 1,
-          "maximum": 20,
-          "description": "Number of context lines to send with completion requests"
+          "default": 50,
+          "description": "Number of context lines to send with completion request"
         },
         "sidekickPro.autocomplete.enabled": {
           "type": "boolean",
@@ -357,28 +360,22 @@
         },
         "sidekickPro.autocomplete.debounceDelay": {
           "type": "number",
-          "default": 1000,
-          "minimum": 500,
-          "maximum": 3000,
+          "default": 500,
           "description": "Delay in milliseconds before making completion request"
         },
         "sidekickPro.autocomplete.minRequestInterval": {
           "type": "number",
-          "default": 500,
-          "minimum": 200,
-          "maximum": 2000,
+          "default": 2000,
           "description": "Minimum time between API requests in milliseconds"
         },
         "sidekickPro.autocomplete.maxRequestsPerMinute": {
           "type": "number",
           "default": 10,
-          "minimum": 5,
-          "maximum": 30,
           "description": "Maximum API requests per minute"
         },
         "sidekickPro.autocomplete.temperature": {
           "type": "number",
-          "default": 0.1,
+          "default": 0.2,
           "minimum": 0,
           "maximum": 1,
           "description": "Model temperature for completions (lower = more deterministic)"
@@ -386,23 +383,18 @@
         "sidekickPro.autocomplete.cacheTimeout": {
           "type": "number",
           "default": 60000,
-          "minimum": 10000,
-          "maximum": 300000,
           "description": "Cache timeout in milliseconds"
         },
         "sidekickPro.autocomplete.enablePatternMatching": {
           "type": "boolean",
           "default": true,
-          "description": "Enable instant pattern-based completions (no API calls)"
+          "description": "Enable instant pattern-based completions (no API call)"
         },
         "sidekickPro.autocomplete.minPrefixLength": {
           "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 10,
+          "default": 3,
           "description": "Minimum characters before triggering autocomplete"
         }
-        
       }
     }
   },

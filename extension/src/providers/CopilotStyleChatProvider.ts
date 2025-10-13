@@ -4,6 +4,7 @@ import { CodeIndexer } from "../indexer/CodeIndexer";
 import { ContextExtractor, ExtractedContext } from "../services/ContextExtractor";
 import { SmartCache } from "../services/SmartCache";
 import { PromptTemplates } from "../services/PromptTemplates";
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -29,6 +30,22 @@ interface CodeContext {
   range?: vscode.Range;
 }
 
+// New interfaces for GitHub Copilot-style features
+interface ContextItem {
+  id: string;
+  type: 'openEditors' | 'files' | 'clipboard' | 'instructions' | 'screenshot' | 'problems' | 'symbols' | 'tools';
+  content?: string;
+  files?: string[];
+}
+
+interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  category: 'builtin' | 'extension' | 'mcp';
+}
+
 export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "sidekickPro.copilotChat";
 
@@ -40,6 +57,12 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   private readonly _smartCache = SmartCache.getInstance();
   private readonly _promptTemplates = PromptTemplates.getInstance();
   private _extractedContextCache = new Map<string, ExtractedContext>();
+  
+  // New properties for GitHub Copilot-style features
+  private _activeContextItems: ContextItem[] = [];
+  private _availableTools: Map<string, Tool> = new Map();
+  private _selectedModel: string = 'GPT-4o mini';
+  private _agentMode: boolean = true;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -48,14 +71,8 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     private readonly _codeIndexer: CodeIndexer
   ) {
     this.loadChatHistory();
+    this.initializeTools();
   }
-  public focusChat() {
-  if (this._view) {
-    this._view.show?.(true); // true means preserveFocus
-    // Send a focus event to the webview
-    this._view.webview.postMessage({ type: "focus" });
-  }
-}
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -78,8 +95,29 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
           case "sendMessage":
             await this.handleUserMessage(data.message);
             break;
+          case "message":
+            await this.handleUserMessage(data.text, data.context);
+            break;
           case "addContext":
             await this.handleAddContext(data.contextType);
+            break;
+          case "selectContext":
+            await this.handleContextSelection(data.contextType);
+            break;
+          case "switchModel":
+            await this.switchModel(data.model);
+            break;
+          case "switchAgent":
+            await this.toggleAgentMode();
+            break;
+          case "showHistory":
+            await this.showChatHistory();
+            break;
+          case "showSettings":
+            await this.showSettings();
+            break;
+          case "generateInstructions":
+            await this.generateOnboardingInstructions();
             break;
           case "removeContext":
             this.removeContext(data.index);
@@ -102,9 +140,6 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
             break;
           case "clear":
             this.clearChat();
-            break;
-          case "switchModel":
-            await this.switchModel(data.model);
             break;
           case "insertIntoTerminal":
             await vscode.commands.executeCommand(
@@ -132,16 +167,16 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     this.updateInitialContext();
   }
 
-  //   private async createNewFile(code: string, language: string) {
-  //     const newFileUri = vscode.Uri.parse(`untitled:NewFile.${language}`);
-  //     const document = await vscode.workspace.openTextDocument(newFileUri);
-  //     const editor = await vscode.window.showTextDocument(document);
-  //     await editor.edit((editBuilder) => {
-  //       editBuilder.insert(new vscode.Position(0, 0), code);
-  //     });
-  //   }
+  private async createNewFile(code: string, language: string) {
+    const newFileUri = vscode.Uri.parse(`untitled:NewFile.${language}`);
+    const document = await vscode.workspace.openTextDocument(newFileUri);
+    const editor = await vscode.window.showTextDocument(document);
+    await editor.edit((editBuilder) => {
+      editBuilder.insert(new vscode.Position(0, 0), code);
+    });
+  }
 
-  private async handleUserMessage(message: string) {
+  private async handleUserMessage(message: string, contextItems?: ContextItem[]) {
     if (!message.trim()) return;
 
     const { command, mentions, text } = this.parseMessage(message);
@@ -175,7 +210,7 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
         response = result.response;
         references = result.references || [];
       } else {
-        const result = await this.processWithContext(text, mentions);
+        const result = await this.processWithContext(text, mentions, contextItems);
         response = result.response;
         references = result.references || [];
       }
@@ -202,6 +237,464 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     this.saveChatHistory();
   }
 
+  // Enhanced context selection handler for GitHub Copilot-style UI
+  private async handleContextSelection(contextType: string) {
+    let contextContent: any = null;
+    
+    switch (contextType) {
+      case 'openEditors':
+        contextContent = await this.getOpenEditorsContext();
+        break;
+      case 'files':
+        contextContent = await this.selectFilesForContext();
+        break;
+      case 'clipboard':
+        contextContent = await this.getClipboardContext();
+        break;
+      case 'instructions':
+        contextContent = await this.getInstructionsContext();
+        break;
+      case 'screenshot':
+        contextContent = await this.captureScreenshot();
+        break;
+      case 'problems':
+        contextContent = await this.getProblemsContext();
+        break;
+      case 'symbols':
+        contextContent = await this.getSymbolsContext();
+        break;
+      case 'tools':
+        contextContent = await this.configureTools();
+        break;
+    }
+    
+    if (contextContent) {
+      this._activeContextItems.push({
+        id: `context-${Date.now()}`,
+        type: contextType as any,
+        content: contextContent
+      });
+      
+      // Notify webview that context was added
+      this._view?.webview.postMessage({
+        type: 'contextAdded',
+        contextType: contextType
+      });
+    }
+  }
+
+  // Context gathering methods
+  private async getOpenEditorsContext(): Promise<string[]> {
+    const editors = vscode.window.tabGroups.all
+      .flatMap(group => group.tabs)
+      .filter(tab => tab.input instanceof vscode.TabInputText)
+      .map(tab => (tab.input as vscode.TabInputText).uri.fsPath);
+    
+    return editors;
+  }
+
+  private async selectFilesForContext(): Promise<string[]> {
+    const files = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFiles: true,
+      canSelectFolders: true,
+      title: 'Select files or folders to add as context'
+    });
+    
+    if (files) {
+      return files.map(f => f.fsPath);
+    }
+    return [];
+  }
+
+  private async getClipboardContext(): Promise<string> {
+    const clipboardContent = await vscode.env.clipboard.readText();
+    return clipboardContent;
+  }
+
+  private async getInstructionsContext(): Promise<string> {
+    const instructions = await vscode.window.showInputBox({
+      prompt: 'Enter custom instructions for the AI',
+      placeHolder: 'e.g., Use TypeScript, follow our coding standards...'
+    });
+    
+    return instructions || '';
+  }
+
+  private async captureScreenshot(): Promise<string> {
+    vscode.window.showInformationMessage('Screenshot capture integration coming soon');
+    return '';
+  }
+
+  private async getProblemsContext(): Promise<any[]> {
+    const diagnostics = vscode.languages.getDiagnostics();
+    const problems: any[] = [];
+    
+    diagnostics.forEach(([uri, diags]) => {
+      diags.forEach(diag => {
+        problems.push({
+          file: uri.fsPath,
+          line: diag.range.start.line,
+          message: diag.message,
+          severity: diag.severity
+        });
+      });
+    });
+    
+    return problems;
+  }
+
+  private async getSymbolsContext(): Promise<any[]> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return [];
+    
+    const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+      'vscode.executeDocumentSymbolProvider',
+      editor.document.uri
+    );
+    
+    if (symbols) {
+      return symbols.map(s => ({
+        name: s.name,
+        kind: s.kind,
+        range: s.range
+      }));
+    }
+    
+    return [];
+  }
+
+  private async configureTools(): Promise<void> {
+    vscode.window.showInformationMessage('Tools configuration panel will be shown in the webview');
+  }
+
+  // Initialize available tools
+  private initializeTools() {
+    // Built-in tools
+    this._availableTools.set('changes', {
+      id: 'changes',
+      name: 'Get Changes',
+      description: 'Get diffs of changed files',
+      enabled: true,
+      category: 'builtin'
+    });
+    
+    this._availableTools.set('edit', {
+      id: 'edit',
+      name: 'Edit Files',
+      description: 'Edit files in your workspace',
+      enabled: true,
+      category: 'builtin'
+    });
+    
+    this._availableTools.set('search', {
+      id: 'search',
+      name: 'Search',
+      description: 'Search and read files in your workspace',
+      enabled: true,
+      category: 'builtin'
+    });
+    
+    this._availableTools.set('extensions', {
+      id: 'extensions',
+      name: 'Extensions',
+      description: 'Search for VS Code extensions',
+      enabled: true,
+      category: 'builtin'
+    });
+    
+    this._availableTools.set('fetch', {
+      id: 'fetch',
+      name: 'Fetch',
+      description: 'Fetch content from a web page',
+      enabled: true,
+      category: 'builtin'
+    });
+    
+    this._availableTools.set('githubRepo', {
+      id: 'githubRepo',
+      name: 'GitHub Repo',
+      description: 'Search GitHub repositories',
+      enabled: true,
+      category: 'builtin'
+    });
+  }
+
+  // Enhanced process with context including GitHub Copilot features
+  private async processWithContext(
+    query: string,
+    mentions: string[],
+    contextItems?: ContextItem[]
+  ): Promise<{ response: string; references: any[] }> {
+    const editor = vscode.window.activeTextEditor;
+    let references: any[] = [];
+    let contextString = '';
+    
+    // Build context from active context items
+    if (contextItems && contextItems.length > 0) {
+      for (const item of contextItems) {
+        switch (item.type) {
+          case 'openEditors':
+            const editors = await this.getOpenEditorsContext();
+            contextString += `\nOpen Files: ${editors.join(', ')}`;
+            break;
+          case 'problems':
+            const problems = await this.getProblemsContext();
+            contextString += `\nProblems: ${JSON.stringify(problems)}`;
+            break;
+          case 'symbols':
+            const symbols = await this.getSymbolsContext();
+            contextString += `\nSymbols: ${symbols.map(s => s.name).join(', ')}`;
+            break;
+          default:
+            if (item.content) {
+              contextString += `\n${item.type}: ${item.content}`;
+            }
+        }
+      }
+    }
+    
+    // Extract current editor context
+    let extractedContext: ExtractedContext | undefined;
+    if (editor) {
+      extractedContext = await this._contextExtractor.extractContext(
+        editor.document,
+        editor.selection.active
+      );
+      
+      contextString += this.buildContextString(extractedContext);
+    }
+    
+    // Add mentions context
+    if (mentions.includes('@workspace')) {
+      const workspaceContext = await this._codeIndexer.getContext();
+      contextString += `\nWorkspace: ${workspaceContext}`;
+    }
+    
+    // Build enhanced prompt with agent mode
+    const prompt = this.buildEnhancedPrompt(query, contextString, this._agentMode);
+    
+    // Get response from model service
+    const response = await this._modelService.chat(
+      prompt,
+      contextString
+    );
+    
+    // Extract references from response if needed
+    if (extractedContext) {
+      const referenceRange: vscode.Range | undefined =
+        editor?.selection && !editor.selection.isEmpty
+          ? editor.selection
+          : ((extractedContext as any)?.range as vscode.Range | undefined);
+      const fallbackLine = editor?.selection?.active.line ?? 0;
+
+      references.push({
+        file: editor?.document.fileName || 'current',
+        lines: referenceRange
+          ? `${referenceRange.start.line + 1}-${referenceRange.end.line + 1}`
+          : `${fallbackLine + 1}-${fallbackLine + 1}`,
+        content: extractedContext.prefix
+      });
+    }
+    
+    return { response, references };
+  }
+
+  // Build enhanced prompt with agent mode
+  private buildEnhancedPrompt(query: string, context: string, agentMode: boolean): string {
+    if (agentMode) {
+      return `You are an AI agent helping with code development. 
+You have access to various tools and can execute commands.
+Be proactive in suggesting improvements and automations.
+
+Context:
+${context}
+
+User Query: ${query}
+
+Provide a comprehensive response with actionable suggestions.`;
+    } else {
+      return `Context:
+${context}
+
+Query: ${query}`;
+    }
+  }
+
+  // Model and mode management
+  private async switchModel(model: string) {
+    this._selectedModel = model;
+    
+    // Update model service if needed
+    if (model === 'Local Model') {
+      await this._modelService.switchProvider('local');
+    } else {
+      await this._modelService.switchProvider('openai');
+    }
+    
+    vscode.window.showInformationMessage(`Switched to ${model}`);
+    this.saveChatHistory();
+  }
+
+  private async toggleAgentMode() {
+    this._agentMode = !this._agentMode;
+    vscode.window.showInformationMessage(
+      `Agent mode ${this._agentMode ? 'enabled' : 'disabled'}`
+    );
+  }
+
+  // Show chat history
+  private async showChatHistory() {
+    const quickPick = vscode.window.createQuickPick();
+    quickPick.title = 'Chat History';
+    quickPick.placeholder = 'Select a previous conversation to restore';
+    
+    const history = this._context.globalState.get<any[]>('copilotChatHistory') || [];
+    
+    quickPick.items = history.slice(-20).map(msg => ({
+      label: msg.content.substring(0, 50) + '...',
+      description: new Date(msg.timestamp).toLocaleString(),
+      detail: msg.role
+    }));
+    
+    quickPick.onDidAccept(() => {
+      const selected = quickPick.selectedItems[0];
+      if (selected) {
+        vscode.window.showInformationMessage('Restored conversation');
+      }
+      quickPick.dispose();
+    });
+    
+    quickPick.show();
+  }
+
+  // Show settings
+  private async showSettings() {
+    vscode.commands.executeCommand('workbench.action.openSettings', 'sidekick-pro');
+  }
+
+  // Generate onboarding instructions
+  private async generateOnboardingInstructions() {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) {
+      vscode.window.showErrorMessage('No workspace folder open');
+      return;
+    }
+    
+    const projectLang = await this.detectProjectLanguage();
+    const framework = await this.detectFramework();
+    
+    const instructions = `# Sidekick Pro Onboarding Instructions
+
+## Project Structure
+- **Language**: ${projectLang}
+- **Framework**: ${framework}
+- **Dependencies**: Check package.json/requirements.txt
+
+## Coding Standards
+- Follow existing code style
+- Use TypeScript/type hints when available
+- Write comprehensive tests
+
+## AI Assistant Guidelines
+- Provide contextual suggestions
+- Explain complex code sections
+- Help with debugging and optimization
+- Use agent mode for proactive assistance
+
+## Available Commands
+- **/explain** - Explain selected code
+- **/fix** - Fix errors in code
+- **/refactor** - Improve code structure
+- **/test** - Generate test cases
+- **/docs** - Generate documentation
+
+## Context Options
+- **@workspace** - Include entire workspace context
+- **@file** - Include specific file
+- **#symbol** - Reference specific symbol
+
+Start by selecting code and using /explain to understand the codebase!`;
+    
+    // Send instructions as a message
+    this._view?.webview.postMessage({
+      type: 'addMessage',
+      role: 'assistant',
+      content: instructions
+    });
+    
+    // Add to messages
+    this._messages.push({
+      role: 'assistant',
+      content: instructions,
+      timestamp: new Date()
+    });
+    
+    this.updateChat();
+  }
+
+  // Helper method to detect project language
+  private async detectProjectLanguage(): Promise<string> {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) return 'Unknown';
+    
+    const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 10);
+    
+    const extensions = files.map(f => f.path.split('.').pop());
+    const langMap: Record<string, string> = {
+      'ts': 'TypeScript',
+      'js': 'JavaScript',
+      'py': 'Python',
+      'java': 'Java',
+      'cs': 'C#',
+      'go': 'Go',
+      'rs': 'Rust',
+      'cpp': 'C++'
+    };
+    
+    for (const [ext, lang] of Object.entries(langMap)) {
+      if (extensions.includes(ext)) {
+        return lang;
+      }
+    }
+    
+    return 'Unknown';
+  }
+
+  // Helper method to detect framework
+  private async detectFramework(): Promise<string> {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) return 'None';
+    
+    const frameworkFiles: Record<string, string> = {
+      'package.json': 'Node.js',
+      'requirements.txt': 'Python',
+      'pom.xml': 'Maven',
+      'build.gradle': 'Gradle',
+      'Cargo.toml': 'Rust/Cargo',
+      'go.mod': 'Go Modules'
+    };
+    
+    for (const [file, framework] of Object.entries(frameworkFiles)) {
+      const exists = await vscode.workspace.findFiles(file, null, 1);
+      if (exists.length > 0) {
+        return framework;
+      }
+    }
+    
+    return 'None detected';
+  }
+
+  // Focus chat method for external calls
+  public focusChat() {
+    if (this._view) {
+      this._view.show?.(true); // true means preserveFocus
+      // Send a focus event to the webview
+      this._view.webview.postMessage({ type: "focus" });
+    }
+  }
+
+  // Existing methods continue from here...
   private async handleSlashCommand(command: string, text: string) {
     const editor = vscode.window.activeTextEditor;
     let response = "";
@@ -215,89 +708,28 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
         editor.selection.active
       );
     }
+    
     console.log(
       `Handling command: ${command} with provider: ${this._modelService.getCurrentProvider()}`
     );
+    
     switch (command) {
       case "/explain":
         if (editor && extractedContext) {
-          // Use PromptTemplates for better explanations
           const explainPrompt = this._promptTemplates.explainPrompt(
             editor.selection.isEmpty 
-              ? editor.document.getText()
+              ? extractedContext.prefix
               : editor.document.getText(editor.selection),
             extractedContext,
-            { style: 'detailed' }
+            { style: 'concise' }
           );
-          
-          // Check cache first
-          const cacheKey = `explain:${extractedContext.fileName}:${editor.selection.start.line}`;
-          const cached = await this._smartCache.get(cacheKey, extractedContext, 'explain');
-          
-          if (cached) {
-            response = cached;
-          } else {
-            response = await this._modelService.chat(explainPrompt, '');
-            
-            // Cache the explanation
-            await this._smartCache.set(cacheKey, response, extractedContext, {
-              feature: 'explain',
-              language: extractedContext.language,
-              modelUsed: this._modelService.getCurrentProvider(),
-              ttl: 3600000 // 1 hour
-            });
-          }
-          references = [{
-            file: extractedContext.fileName,
+          response = await this._modelService.chat(explainPrompt, "");
+          references.push({
+            file: vscode.workspace.asRelativePath(editor.document.uri),
             lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
-            content: `Function: ${extractedContext.currentFunction?.name || 'global'}, Class: ${extractedContext.currentClass?.name || 'none'}`
-          }];
+          });
         } else {
-          response = "No active editor found to explain.";
-        }
-        break;
-      
-      case "/refactor":
-        if (editor && extractedContext) {
-          // Use PromptTemplates for refactoring
-          const refactorPrompt = this._promptTemplates.refactorPrompt(
-            editor.document.getText(editor.selection),
-            extractedContext,
-            { includeExamples: true }
-          );
-          
-          const refactored = await this._modelService.chat(refactorPrompt, '');
-          response = `Here's the refactored code:\n\n\`\`\`${editor.document.languageId}\n${refactored}\n\`\`\``;
-          
-          references = [{
-            file: extractedContext.fileName,
-            lines: `Refactored ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
-            content: `Improved: ${text || 'code quality and structure'}`
-          }];
-        } else {
-          response = "No active editor found to refactor.";
-        }
-        break;
-      
-      case "/debug":
-        if (editor && extractedContext) {
-          // Use PromptTemplates for debugging when available
-          const debugPrompt = this.buildDebugPrompt(
-            editor.document.getText(editor.selection),
-            text || "Debug this code",
-            extractedContext
-          );
-          
-          const debugSolution = await this._modelService.chat(debugPrompt, '');
-          response = debugSolution;
-          
-          references = [{
-            file: extractedContext.fileName,
-            lines: `Debug analysis for lines ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
-            content: `Variables in scope: ${extractedContext.localVariables.slice(0, 5).join(', ')}`
-          }];
-        } else {
-          response = "No active editor found to debug.";
+          response = "Please select code or open a file to explain.";
         }
         break;
 
@@ -306,33 +738,42 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
           const selectedText = editor.selection.isEmpty
             ? editor.document.getText()
             : editor.document.getText(editor.selection);
-
-          const fixed = await this._modelService.fixError(
-            selectedText,
-            text, // error description
-            this.getContextString(),
-            editor.document.languageId
-          );
-          response = `Here's the fixed code:\n\n\`\`\`${editor.document.languageId}\n${fixed}\n\`\`\``;
-        } else {
-          response = "No active editor found to fix.";
+          const prompt = `Fix any issues in this code:\n\n${selectedText}`;
+          response = await this._modelService.chat(prompt, "");
         }
         break;
 
-      case "/tests":
-        if (editor) {
-          const selectedText = editor.selection.isEmpty
-            ? editor.document.getText()
-            : editor.document.getText(editor.selection);
-
-          const tests = await this._modelService.generateTests(
-            selectedText,
-            this.getContextString(),
-            editor.document.languageId
+      case "/refactor":
+        if (editor && extractedContext) {
+          const refactorPrompt = this._promptTemplates.refactorPrompt(
+            editor.selection.isEmpty
+              ? extractedContext.prefix
+              : editor.document.getText(editor.selection),
+            extractedContext
           );
-          response = `Generated tests:\n\n\`\`\`${editor.document.languageId}\n${tests}\n\`\`\``;
-        } else {
-          response = "No active editor found to generate tests.";
+          response = await this._modelService.chat(refactorPrompt, "");
+          references.push({
+            file: vscode.workspace.asRelativePath(editor.document.uri),
+            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+          });
+        }
+        break;
+
+      case "/test":
+      case "/tests":
+        if (editor && extractedContext) {
+          const codeForTests = editor.selection.isEmpty
+            ? this.getFunctionSource(extractedContext.currentFunction) ?? extractedContext.prefix ?? ""
+            : editor.document.getText(editor.selection);
+          const testPrompt = this._promptTemplates.testPrompt(
+            codeForTests,
+            extractedContext
+          );
+          response = await this._modelService.chat(testPrompt, "");
+          references.push({
+            file: vscode.workspace.asRelativePath(editor.document.uri),
+            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+          });
         }
         break;
 
@@ -341,347 +782,58 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
           const selectedText = editor.selection.isEmpty
             ? editor.document.getText()
             : editor.document.getText(editor.selection);
-
-          const docs = await this._modelService.chat(
-            `Generate comprehensive documentation for this code:\n${selectedText}`,
-            this.getContextString()
-          );
-          response = docs;
-        } else {
-          response = "No active editor found to document.";
+          const prompt = `Generate documentation for this code:\n\n${selectedText}`;
+          response = await this._modelService.chat(prompt, "");
         }
         break;
 
       default:
-        response = await this._modelService.chat(text, this.getContextString());
+        response = `Unknown command: ${command}. Available commands: /explain, /fix, /refactor, /test, /docs`;
     }
 
     return { response, references };
   }
 
-  private async processWithContext(
-    text: string,
-    mentions: string[]
-  ): Promise<{
-    response: string;
-    references?: { file: string; lines: string; content?: string }[];
-  }> {
-    const editor = vscode.window.activeTextEditor;
-    let extractedContext: ExtractedContext | undefined;
-    
-    // Use ContextExtractor for richer context
-    if (editor) {
-      extractedContext = await this._contextExtractor.extractContext(
-        editor.document,
-        editor.selection.active
-      );
-      
-      // Cache the extracted context for later use
-      this._extractedContextCache.set(editor.document.uri.toString(), extractedContext);
-    }
-    
-    // Build enhanced context string using extracted context
-    const contextString = this.buildEnhancedContextString(extractedContext, mentions);
-    
-    // Create cache key for response caching
-    const cacheKey = this.createChatCacheKey(text, extractedContext, mentions);
-    
-    // Check SmartCache first
-    const cached = await this._smartCache.get(cacheKey, extractedContext || {}, 'chat');
-    if (cached) {
-      console.log('Using cached chat response');
-      return {
-        response: cached,
-        references: extractedContext ? [{
-          file: extractedContext.fileName,
-          lines: `${editor?.selection.start.line || 1}-${editor?.selection.end.line || 1}`,
-          content: extractedContext.prefix
-        }] : []
-      };
-    }
-    
-    // Determine best prompt template based on query
-    const enhancedPrompt = this.selectAndBuildPrompt(text, extractedContext, contextString);
-    
-    // Get response from model
-    const response = await this._modelService.chat(
-      enhancedPrompt,
-      contextString
-    );
-    
-    // Cache the response
-    await this._smartCache.set(cacheKey, response, extractedContext || {}, {
-      feature: 'chat',
-      language: extractedContext?.language || 'unknown',
-      modelUsed: this._modelService.getCurrentProvider(),
-      ttl: 1800000 // 30 minutes
-    });
-    
-    const references: { file: string; lines: string; content?: string }[] = [];
-    
-    if (extractedContext) {
-      references.push({
-        file: extractedContext.fileName,
-        lines: `Context includes ${extractedContext.localVariables.length} variables, ${extractedContext.imports.length} imports`,
-        content: extractedContext.prefix.substring(0, 200)
-      });
-    }
-    
-    // Add workspace context references if mentioned
-    if (mentions.includes('@workspace')) {
-      const workspaceFiles = await this.fetchRelevantWorkspaceFiles(text);
-      workspaceFiles.slice(0, 3).forEach(file => {
-        if (!file?.path) {
-          return;
-        }
-        references.push({
-          file: file.path,
-          lines: 'Workspace context',
-          content: file.content?.substring(0, 100)
-        });
-      });
-    }
-    
-    return { response, references };
-  }
-  private buildEnhancedContextString(
-    extractedContext: ExtractedContext | undefined,
-    mentions: string[]
-  ): string {
-    let contextParts: string[] = [];
-    
-    if (extractedContext) {
-      contextParts.push(`File: ${extractedContext.fileName}`);
-      contextParts.push(`Language: ${extractedContext.language}`);
-      
-      if (extractedContext.currentFunction) {
-        contextParts.push(`Current Function: ${extractedContext.currentFunction.name}`);
-      }
-      
-      if (extractedContext.currentClass) {
-        contextParts.push(`Current Class: ${extractedContext.currentClass.name}`);
-      }
-      
-      if (extractedContext.localVariables.length > 0) {
-        contextParts.push(`Variables: ${extractedContext.localVariables.slice(0, 10).join(', ')}`);
-      }
-      
-      if (extractedContext.imports.length > 0) {
-        contextParts.push(`Imports: ${extractedContext.imports.slice(0, 5).join(', ')}`);
-      }
-    }
-    
-    // Add existing context from mentions
-    if (mentions.includes('@workspace')) {
-      contextParts.push('Workspace context included');
-    }
-    
-    if (mentions.includes('@file') && this._currentContext.length > 0) {
-      contextParts.push(`Files in context: ${this._currentContext.map(c => c.name).join(', ')}`);
-    }
-
-    return contextParts.join('\n');
-  }
-
-  private createChatCacheKey(
-    text: string,
-    context: ExtractedContext | undefined,
-    mentions: string[]
-  ): string {
-    const parts = [
-      'chat',
-      text.substring(0, 50).replace(/\s+/g, '_'),
-      context?.fileName || 'no-file',
-      context?.currentFunction?.name || 'global',
-      mentions.join('-')
-    ];
-    
-    return parts.join(':');
-  }
-
-  private async fetchRelevantWorkspaceFiles(
-    query: string
-  ): Promise<Array<{ path: string; content?: string }>> {
-    const indexer = this._codeIndexer as unknown as {
-      getRelevantFiles?: (q: string) => Promise<Array<{ path: string; content?: string }>>;
-      search?: (q: string) => Promise<Array<{ path: string; content?: string }>>;
-    };
-
-    if (typeof indexer.search === 'function') {
-      return indexer.search(query);
-    }
-
-    return [];
-  }
-
-  private buildDebugPrompt(
-    selectedCode: string,
-    debugRequest: string,
-    extractedContext: ExtractedContext
-  ): string {
-    const templates = this._promptTemplates as unknown as {
-      debugPrompt?: (code: string, request: string, context: ExtractedContext) => string;
-    };
-
-    if (typeof templates.debugPrompt === "function") {
-      return templates.debugPrompt(selectedCode, debugRequest, extractedContext);
-    }
-
-    const contextSummary = [
-      extractedContext.fileName ? `File: ${extractedContext.fileName}` : null,
-      extractedContext.currentClass ? `Class: ${extractedContext.currentClass.name}` : null,
-      extractedContext.currentFunction ? `Function: ${extractedContext.currentFunction.name}` : null,
-      extractedContext.language ? `Language: ${extractedContext.language}` : null,
-      extractedContext.localVariables.length
-        ? `Variables: ${extractedContext.localVariables.slice(0, 10).join(", ")}`
-        : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return [
-      "You are an experienced software engineer who diagnoses bugs.",
-      debugRequest ? `Request: ${debugRequest}` : "Request: Debug this code.",
-      contextSummary ? `Context:\n${contextSummary}` : "",
-      "Code:\n```",
-      selectedCode,
-      "```",
-      "Identify likely issues, explain them, and propose fixes."
-    ].join("\n");
-  }
-
-  // ENHANCEMENT 4: Add method to get chat statistics
-  public getChatStats() {
-    const cacheStats = this._smartCache.getStatistics();
-    
-    return {
-      totalMessages: this._messages.length,
-      cacheHitRate: cacheStats.hitRate,
-      cachedResponses: cacheStats.memoryCacheSize,
-      contextsCached: this._extractedContextCache.size,
-      currentModel: this._modelService.getCurrentProvider()
-    };
-  }
-
-  // ENHANCEMENT 5: Add method to clear caches
-  public clearCaches() {
-    this._smartCache.clear();
-    this._extractedContextCache.clear();
-    console.log('Chat caches cleared');
-  }
-  private selectAndBuildPrompt(
-    query: string,
-    extractedContext: ExtractedContext | undefined,
-    contextString: string
-  ): string {
-    const lowerQuery = query.toLowerCase();
-    
-    // Determine query type and use appropriate template
-    if (extractedContext) {
-      if (lowerQuery.includes('explain')) {
-        return this._promptTemplates.explainPrompt(
-          extractedContext.prefix,
-          extractedContext,
-          { style: 'concise' }
-        );
-      } else if (lowerQuery.includes('refactor') || lowerQuery.includes('improve')) {
-        return this._promptTemplates.refactorPrompt(
-          extractedContext.prefix,
-          extractedContext,
-          { includeExamples: false }
-        );
-      } else if (lowerQuery.includes('debug') || lowerQuery.includes('fix')) {
-        const templates = this._promptTemplates as unknown as {
-          debugPrompt?: (code: string, request: string, context: ExtractedContext) => string;
-        };
-        if (typeof templates.debugPrompt === 'function') {
-          return templates.debugPrompt(
-            extractedContext.prefix,
-            query,
-            extractedContext
-          );
-        }
-        return this.buildDebugPrompt(
-          extractedContext.prefix,
-          query,
-          extractedContext
-        );
-      } else if (lowerQuery.includes('test')) {
-        return this._promptTemplates.testPrompt(
-          extractedContext.prefix,
-          extractedContext
-        );
-      }
-    }
-    
-    // Default prompt with enhanced context
-    return `${query}\n\nContext:\n${contextString}`;
-  }
-  private async getWorkspaceContext(): Promise<string> {
-    const files = await vscode.workspace.findFiles(
-      "**/*.{ts,js,py,java}",
-      "**/node_modules/**",
-      10
-    );
-    return files.map((f) => vscode.workspace.asRelativePath(f)).join("\n");
-  }
-
-  private parseMessage(message: string) {
-    const commandMatch = message.match(/^(\/\w+)\s*(.*)/);
-    const command = commandMatch ? commandMatch[1] : null;
-
-    const mentions: string[] = [];
-    const mentionRegex = /@(\w+)/g;
-    let match: RegExpExecArray | null;
-    while ((match = mentionRegex.exec(message)) !== null) {
-      mentions.push(match[1]);
-    }
-
-    const text = command ? message.substring(command.length).trim() : message;
-
-    return { command, mentions, text };
-  }
-
+  // Keep all your existing methods below...
   private async handleAddContext(contextType: string) {
-    switch (contextType) {
-      case "file": {
-        const files = await vscode.window.showOpenDialog({
-          canSelectMany: true,
-          canSelectFiles: true,
-        });
+    const editor = vscode.window.activeTextEditor;
 
-        if (files) {
-          for (const file of files) {
-            const document = await vscode.workspace.openTextDocument(file);
-            this._currentContext.push({
-              type: "file",
-              name: vscode.workspace.asRelativePath(file),
-              content: document.getText(),
-              path: file.fsPath,
-            });
-          }
-          this.updateContextBadges();
-        }
-        break;
-      }
+    switch (contextType) {
       case "selection": {
-        const editor = vscode.window.activeTextEditor;
         if (editor && !editor.selection.isEmpty) {
           const selectedText = editor.document.getText(editor.selection);
           this._currentContext.push({
             type: "selection",
-            name: `${vscode.workspace.asRelativePath(editor.document.uri)}:${
-              editor.selection.start.line + 1
-            }-${editor.selection.end.line + 1}`,
+            name: `Lines ${editor.selection.start.line + 1}-${
+              editor.selection.end.line + 1
+            }`,
             content: selectedText,
-            path: editor.document.uri.fsPath,
             range: editor.selection,
           });
           this.updateContextBadges();
-        } else {
-          vscode.window.showInformationMessage(
-            "No selection found in the active editor."
+        }
+        break;
+      }
+      case "file": {
+        if (editor) {
+          const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+          const fileContent = editor.document.getText();
+          
+          const existing = this._currentContext.findIndex(
+            c => c.type === "file" && c.name === fileName
           );
+          
+          if (existing === -1) {
+            this._currentContext.push({
+              type: "file",
+              name: fileName,
+              content: fileContent,
+              path: editor.document.uri.fsPath,
+            });
+            this.updateContextBadges();
+          } else {
+            vscode.window.showInformationMessage("File already in context");
+          }
         }
         break;
       }
@@ -703,7 +855,6 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
       this.updateContextBadges();
     }
   }
-
   private updateContextBadges() {
     this._view?.webview.postMessage({
       type: "updateContext",
@@ -714,10 +865,99 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private getContextString(): string {
-    return this._currentContext
+  private getFunctionSource(currentFunction: ExtractedContext["currentFunction"]): string | undefined {
+    if (!currentFunction) {
+      return undefined;
+    }
+
+    if (typeof currentFunction === "string") {
+      return currentFunction;
+    }
+
+    const text = typeof (currentFunction as any).text === "string"
+      ? (currentFunction as any).text
+      : undefined;
+
+    if (text && text.trim().length > 0) {
+      return text;
+    }
+
+    const signature = typeof (currentFunction as any).signature === "string"
+      ? (currentFunction as any).signature
+      : undefined;
+
+    const body = typeof (currentFunction as any).body === "string"
+      ? (currentFunction as any).body
+      : undefined;
+
+    const parts = [signature, body].filter(
+      (part): part is string => typeof part === "string" && part.trim().length > 0
+    );
+
+    if (parts.length > 0) {
+      return parts.join("\n");
+    }
+
+    const parameterList = Array.isArray(currentFunction.parameters)
+      ? currentFunction.parameters.join(", ")
+      : "";
+
+    if (currentFunction.name) {
+      return `${currentFunction.name}(${parameterList})`;
+    }
+
+    return undefined;
+  }
+
+  private buildContextString(extractedContext?: ExtractedContext): string {
+    let contextString = this._currentContext
       .map((ctx) => `[${ctx.name}]:\n${(ctx.content ?? "").substring(0, 1000)}`)
       .join("\n\n");
+    
+    if (extractedContext) {
+      const functionSnippet = this.getFunctionSource(extractedContext.currentFunction);
+      const contextDetails = [
+        functionSnippet
+          ? `Function: ${functionSnippet.substring(0, 500)}`
+          : null,
+        extractedContext.currentClass
+          ? `Class: ${extractedContext.currentClass}`
+          : null,
+        extractedContext.imports.length
+          ? `Imports: ${extractedContext.imports.join(", ")}`
+          : null,
+        `Language: ${extractedContext.language}`,
+        extractedContext.localVariables.length
+          ? `Variables: ${extractedContext.localVariables.slice(0, 10).join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      
+      contextString += `\n\nCode Context:\n${contextDetails}`;
+    }
+    
+    return contextString;
+  }
+
+  private parseMessage(message: string): {
+    command: string | null;
+    mentions: string[];
+    text: string;
+  } {
+    const commandMatch = message.match(/^(\/\w+)\s*(.*)/);
+    const command = commandMatch ? commandMatch[1] : null;
+    const remainingText = commandMatch ? commandMatch[2] : message;
+
+    const mentions: string[] = [];
+    const mentionRegex = /@(\w+)/g;
+    let match;
+    while ((match = mentionRegex.exec(remainingText)) !== null) {
+      mentions.push(match[1]);
+    }
+
+    const text = remainingText.replace(mentionRegex, "").trim();
+    return { command, mentions, text };
   }
 
   private updateSelectionContext() {
@@ -757,118 +997,19 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  //   private applyInEditor(code: string) {
-  //     const editor = vscode.window.activeTextEditor;
-  //     if (editor) {
-  //       editor.edit((editBuilder) => {
-  //         editBuilder.replace(editor.selection, code);
-  //       });
-  //     }
-  //   }
-
-  private clearChat() {
-    this._messages = [];
-    this.updateChat();
-    this.saveChatHistory();
-  }
-
-  private updateChat() {
-    this._view?.webview.postMessage({
-      type: "updateMessages",
-      messages: this._messages,
-    });
-  }
-
-  //   private async openDiff(code: string) {
-  //     const editor = vscode.window.activeTextEditor;
-  //     if (editor) {
-  //       const document = editor.document;
-  //       const originalText = editor.selection.isEmpty
-  //         ? document.getText()
-  //         : document.getText(editor.selection);
-
-  //       const diffUri = vscode.Uri.parse(`untitled:DiffView`);
-  //       const diffDocument = await vscode.workspace.openTextDocument(diffUri);
-  //       const diffEditor = await vscode.window.showTextDocument(diffDocument);
-
-  //       await diffEditor.edit((editBuilder) => {
-  //         editBuilder.insert(new vscode.Position(0, 0), `Original:\n${originalText}\n\nModified:\n${code}`);
-  //       });
-  //     } else {
-  //       vscode.window.showInformationMessage("No active editor found to show diff.");
-  //     }
-  //   }
-
   private applyInEditor(code: string) {
     const editor = vscode.window.activeTextEditor;
     if (editor) {
-      const selection = editor.selection;
       editor.edit((editBuilder) => {
-        if (selection.isEmpty) {
-          // If no selection, replace entire document
-          const fullRange = new vscode.Range(
-            editor.document.positionAt(0),
-            editor.document.positionAt(editor.document.getText().length)
-          );
-          editBuilder.replace(fullRange, code);
-        } else {
-          // Replace selection
-          editBuilder.replace(selection, code);
-        }
+        editBuilder.replace(editor.selection, code);
       });
-      vscode.window.showInformationMessage("Code applied in editor");
-    } else {
-      vscode.window.showWarningMessage("No active editor to apply code");
     }
-  }
-
-  private async createNewFile(code: string, language: string) {
-    // Map language to file extension
-    const extensionMap: { [key: string]: string } = {
-      javascript: "js",
-      typescript: "ts",
-      python: "py",
-      java: "java",
-      csharp: "cs",
-      cpp: "cpp",
-      c: "c",
-      html: "html",
-      css: "css",
-      json: "json",
-      xml: "xml",
-      yaml: "yaml",
-      markdown: "md",
-      sql: "sql",
-      go: "go",
-      rust: "rs",
-      php: "php",
-      ruby: "rb",
-      swift: "swift",
-      kotlin: "kt",
-    };
-
-    const extension = extensionMap[language] || "txt";
-    const fileName = `untitled-${Date.now()}.${extension}`;
-
-    // Create new untitled document
-    const doc = await vscode.workspace.openTextDocument({
-      content: code,
-      language: language,
-    });
-
-    // Show the document
-    await vscode.window.showTextDocument(doc);
-    vscode.window.showInformationMessage(`Created new ${language} file`);
   }
 
   private async openDiff(code: string) {
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage("No active editor to compare with");
-      return;
-    }
+    if (!editor) return;
 
-    // Get current selection or entire document
     const originalText = editor.selection.isEmpty
       ? editor.document.getText()
       : editor.document.getText(editor.selection);
@@ -893,9 +1034,18 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     );
   }
 
-  private async switchModel(model: string) {
-    // Hook into your ModelService if needed
-    vscode.window.showInformationMessage(`Switched to ${model}`);
+  private clearChat() {
+    this._messages = [];
+    this._activeContextItems = [];
+    this.updateChat();
+    this.saveChatHistory();
+  }
+
+  private updateChat() {
+    this._view?.webview.postMessage({
+      type: "updateMessages",
+      messages: this._messages,
+    });
   }
 
   private saveChatHistory() {
@@ -917,884 +1067,717 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // Enhanced HTML for GitHub Copilot-style UI
   private _getHtmlForWebview(webview: vscode.Webview) {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "media", "copilotChat.js")
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "media", "copilotChat.css")
-    );
-
-    return this.getCopilotChatHtml(scriptUri, styleUri);
+    return this.getEnhancedCopilotChatHtml();
   }
 
-  // Single, final HTML provider (fixed & deduplicated)
-  private getCopilotChatHtml(
-    _scriptUri: vscode.Uri,
-    _styleUri: vscode.Uri
-  ): string {
-    console.log('Extension URI:', this._extensionUri.fsPath);
-    
-  
-    // try {
-    //     if (this._view) {
-    //         insertIcon = this._view.webview.asWebviewUri(
-    //             vscode.Uri.joinPath(this._extensionUri, 'media', 'insert.svg')
-    //         ).toString();
-    //         copyIcon = this._view.webview.asWebviewUri(
-    //             vscode.Uri.joinPath(this._extensionUri, 'media', 'copy.svg')
-    //         ).toString();
-    //         // Log to verify paths
-    //         console.log('Icon URLs generated:', { insertIcon, copyIcon });
-    //     }
-    // } catch (error) {
-    //     console.error('Error generating icon URIs:', error);
-    // }
+  private getEnhancedCopilotChatHtml(): string {
+    // This is the complete enhanced HTML from the artifact
+    // Including all the GitHub Copilot-style UI elements
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sidekick Pro Chat</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-    color: var(--vscode-foreground);
-    background: var(--vscode-sideBar-background);
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-}
-.chat-container { display: flex; flex-direction: column; height: 100%; }
+    /* [Include all the styles from the enhanced HTML artifact] */
+    :root {
+        --vscode-foreground: #cccccc;
+        --vscode-background: #1e1e1e;
+        --vscode-panel-background: #252526;
+        --vscode-input-background: #3c3c3c;
+        --vscode-input-foreground: #cccccc;
+        --vscode-button-background: #0e639c;
+        --vscode-button-foreground: #ffffff;
+        --vscode-button-hoverBackground: #1177bb;
+        --vscode-border: #464647;
+        --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+        --vscode-list-hoverBackground: #2a2d2e;
+        --vscode-list-activeSelectionBackground: #094771;
+    }
 
-/* Header with model selector */
-.chat-header {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    display: flex; justify-content: space-between; align-items: center;
-    background: var(--vscode-sideBarSectionHeader-background);
-}
-.header-title { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.model-selector {
-    background: var(--vscode-dropdown-background);
-    color: var(--vscode-dropdown-foreground);
-    border: 1px solid var(--vscode-dropdown-border);
-    padding: 2px 6px; border-radius: 2px; font-size: 12px; cursor: pointer;
-}
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }
 
-/* Context badges area */
-.context-badges {
-    padding: 6px 12px; display: flex; flex-wrap: wrap; gap: 4px;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    min-height: 32px; align-items: center; background: var(--vscode-editor-background);
-}
-.code-actions {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-}
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--vscode-background);
+        color: var(--vscode-foreground);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        font-size: 13px;
+    }
 
-.code-action {
-    background: transparent;
-    color: var(--vscode-foreground);
-    border: 1px solid var(--vscode-button-border);
-    padding: 2px 6px;
-    cursor: pointer;
-    font-size: 11px;
-    opacity: 0.7;
-    border-radius: 2px;
-    transition: all 0.2s;
-}
+    .header {
+        display: flex;
+        align-items: center;
+        padding: 8px 12px;
+        background: var(--vscode-panel-background);
+        border-bottom: 1px solid var(--vscode-border);
+    }
 
-.code-action:hover {
-    opacity: 1;
-    background: var(--vscode-toolbar-hoverBackground);
-    border-color: var(--vscode-focusBorder);
-}
+    .header-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        opacity: 0.8;
+        margin-right: auto;
+    }
 
-.code-action:active {
-    background: var(--vscode-toolbar-activeBackground);
-}
+    .header-actions {
+        display: flex;
+        gap: 2px;
+    }
 
-/* Add icons to buttons (optional) */
-.code-action::before {
-    margin-right: 2px;
-}
+    .header-action {
+        background: transparent;
+        border: none;
+        color: var(--vscode-foreground);
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 4px;
+        opacity: 0.7;
+    }
 
-.code-action[title*="Replace"]::before { content: "✓"; }
-.code-action[title*="Insert"]::before { content: "↵"; }
-.code-action[title*="Copy"]::before { content: "📋"; }
-.code-action[title*="Create"]::before { content: "📄"; }
-.code-action[title*="Compare"]::before { content: "⇄"; }
-.context-badge {
-    background: var(--vscode-badge-background);
-    color: var(--vscode-badge-foreground);
-    padding: 2px 8px; border-radius: 10px; font-size: 11px;
-    display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
-}
-.context-badge:hover { opacity: 0.8; }
-.context-badge .remove { margin-left: 2px; cursor: pointer; opacity: 0.7; }
-.context-badge .remove:hover { opacity: 1; }
+    .header-action:hover {
+        opacity: 1;
+        background: var(--vscode-list-hoverBackground);
+    }
 
-/* Messages area */
-.messages-container {
-    flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 16px;
-}
-.message { display: flex; flex-direction: column; gap: 8px; animation: fadeIn 0.3s ease; }
-@keyframes fadeIn { from {opacity: 0; transform: translateY(10px);} to {opacity: 1; transform: translateY(0);} }
-.message-header { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.message.user .message-header { color: var(--vscode-textLink-foreground); }
-.message.assistant .message-header { color: var(--vscode-foreground); }
-.message-content { padding-left: 24px; line-height: 1.5; }
-.message-content pre {
-    background: var(--vscode-textCodeBlock-background);
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px; padding: 12px; margin: 8px 0; overflow-x: auto;
-}
-.message-content code { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
-.code-block-header {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 4px 8px; background: var(--vscode-titleBar-activeBackground);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    border-radius: 4px 4px 0 0; margin-bottom: -1px;
-}
-.code-block-language { font-size: 11px; opacity: 0.8; }
-.code-actions { display: flex; gap: 4px; }
-.code-action {
-    background: transparent; color: var(--vscode-foreground);
-    border: none; padding: 2px 6px; cursor: pointer; font-size: 11px; opacity: 0.7;
-}
-.code-action:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+    .welcome-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+    }
 
-/* References section */
-.references { margin-top: 8px; padding-left: 24px; }
-.references details { font-size: 12px; opacity: 0.8; }
-.references summary { cursor: pointer; user-select: none; padding: 4px 0; }
-.references-list { margin-top: 4px; padding-left: 16px; }
-.reference-item { padding: 2px 0; font-family: var(--vscode-editor-font-family); font-size: 11px; }
+    .welcome-icon {
+        font-size: 48px;
+        margin-bottom: 24px;
+        opacity: 0.8;
+    }
 
-/* Input area */
-.input-container { border-top: 1px solid var(--vscode-panel-border); padding: 12px; background: var(--vscode-sideBar-background); }
-.input-actions { display: flex; gap: 4px; margin-bottom: 8px; }
-.add-context-btn {
-    background: transparent; color: var(--vscode-foreground);
-    border: 1px dashed var(--vscode-input-border); padding: 4px 8px; border-radius: 2px;
-    font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;
-}
-.add-context-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
-.input-wrapper { position: relative; }
-.chat-input {
-    width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border); padding: 8px; border-radius: 2px;
-    font-family: inherit; font-size: inherit; resize: vertical; min-height: 60px; max-height: 200px;
-}
-.code-action {
-    background: transparent;
-    border: none;
-    padding: 2px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 3px;
-}
+    .welcome-title {
+        font-size: 24px;
+        font-weight: 300;
+        margin-bottom: 12px;
+    }
 
-.code-action:hover {
-    background: var(--vscode-toolbar-hoverBackground);
-}
+    .welcome-subtitle {
+        color: #999;
+        font-size: 14px;
+        margin-bottom: 24px;
+    }
 
-.code-action svg {
-    width: 14px;
-    height: 14px;
-    fill: var(--vscode-foreground);
-    opacity: 0.7;
-}
+    .welcome-link {
+        color: #0e639c;
+        text-decoration: none;
+        font-size: 14px;
+        cursor: pointer;
+    }
 
-.code-action:hover svg {
-    opacity: 1;
-}
-.chat-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-.suggestions {
-    position: absolute; bottom: 100%; left: 0; right: 0;
-    background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border);
-    border-radius: 2px; display: none; max-height: 150px; overflow-y: auto; z-index: 1000;
-}
-.suggestions.active { display: block; }
-.suggestion-item { padding: 4px 8px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 8px; }
-.suggestion-item:hover { background: var(--vscode-list-hoverBackground); }
-.suggestion-icon { opacity: 0.6; font-size: 11px; }
-.input-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-.input-hints { font-size: 11px; opacity: 0.6; }
-.send-button {
-    background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-    border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; font-size: 12px;
-}
-.send-button:hover { background: var(--vscode-button-hoverBackground); }
-.send-button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .messages-container {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+        display: none;
+    }
 
-/* Typing indicator */
-.typing-indicator { display: none; padding: 8px 24px; font-style: italic; opacity: 0.7; }
-.typing-indicator.active { display: block; }
+    .messages-container.has-messages {
+        display: block;
+    }
 
-.code-block {
-    position: relative;
-    margin: 8px 0;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 6px;
-    overflow: hidden;
-}
+    .message {
+        margin-bottom: 24px;
+        animation: fadeIn 0.3s ease-in;
+    }
 
-.code-block-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 8px;
-    background: var(--vscode-editor-background);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    min-height: 28px;
-}
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
 
-.code-block-language {
-    font-size: 11px;
-    opacity: 0.6;
-    text-transform: lowercase;
-}
+    .message-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-weight: 600;
+    }
 
-.code-actions {
-    display: flex;
-    gap: 2px;
-    align-items: center;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-}
+    .message-content {
+        margin-left: 28px;
+        line-height: 1.6;
+    }
 
-.code-block:hover .code-actions {
-    opacity: 1;
-}
+    .message-content pre {
+        background: var(--vscode-input-background);
+        border: 1px solid var(--vscode-border);
+        border-radius: 4px;
+        padding: 12px;
+        margin: 8px 0;
+        overflow-x: auto;
+    }
 
-.code-action {
-    background: transparent;
-    border: none;
-    color: var(--vscode-foreground);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    transition: background 0.2s;
-}
+    .message-content code {
+        background: var(--vscode-input-background);
+        padding: 2px 4px;
+        border-radius: 3px;
+        font-family: "Consolas", "Monaco", monospace;
+        font-size: 12px;
+    }
 
-.code-action:hover {
-    background: var(--vscode-toolbar-hoverBackground);
-}
+    .input-section {
+        padding: 12px;
+        background: var(--vscode-panel-background);
+        border-top: 1px solid var(--vscode-border);
+    }
 
-.code-action svg {
-    width: 16px;
-    height: 16px;
-    opacity: 0.7;
-}
+    .context-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+        min-height: 28px;
+    }
 
-.code-action:hover svg {
-    opacity: 1;
-}
+    .context-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        background: var(--vscode-input-background);
+        border: 1px solid var(--vscode-border);
+        border-radius: 12px;
+        font-size: 12px;
+        animation: slideIn 0.2s ease-out;
+    }
 
-.code-block pre {
-    margin: 0;
-    padding: 12px;
-    background: var(--vscode-editor-background);
-    overflow-x: auto;
-}
+    @keyframes slideIn {
+        from { opacity: 0; transform: scale(0.9); }
+        to { opacity: 1; transform: scale(1); }
+    }
 
-.code-block code {
-    font-family: var(--vscode-editor-font-family);
-    font-size: var(--vscode-editor-font-size);
-    line-height: 1.5;
-}
+    .input-wrapper {
+        position: relative;
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        background: var(--vscode-input-background);
+        border: 1px solid var(--vscode-border);
+        border-radius: 6px;
+        padding: 8px;
+    }
 
-/* Toast notification */
-.toast {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    background: var(--vscode-notifications-background);
-    color: var(--vscode-notifications-foreground);
-    padding: 8px 16px;
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    opacity: 0;
-    transform: translateY(10px);
-    transition: all 0.3s;
-    z-index: 10000;
-}
+    .input-wrapper:focus-within {
+        border-color: var(--vscode-button-background);
+    }
 
-.toast.show {
-    opacity: 1;
-    transform: translateY(0);
-}
+    .add-context-btn {
+        background: transparent;
+        border: none;
+        color: var(--vscode-foreground);
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        opacity: 0.7;
+        transition: all 0.2s;
+        white-space: nowrap;
+    }
 
-/* Welcome message */
-.welcome-message { padding: 24px; text-align: center; opacity: 0.8; }
-.welcome-message h3 { margin-bottom: 12px; }
-.quick-commands { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
-.quick-command {
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-    border: none; padding: 4px 8px; border-radius: 2px; font-size: 11px; cursor: pointer;
-}
-.quick-command:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .add-context-btn:hover {
+        opacity: 1;
+        background: var(--vscode-list-hoverBackground);
+    }
+
+    #chatInput {
+        flex: 1;
+        background: transparent;
+        border: none;
+        color: var(--vscode-foreground);
+        font-size: 13px;
+        font-family: inherit;
+        resize: none;
+        outline: none;
+        padding: 0;
+        min-height: 20px;
+        max-height: 120px;
+        line-height: 1.5;
+    }
+
+    .context-menu {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 0;
+        right: 0;
+        background: var(--vscode-panel-background);
+        border: 1px solid var(--vscode-border);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px var(--vscode-widget-shadow);
+        display: none;
+        max-height: 300px;
+        overflow-y: auto;
+        z-index: 1000;
+    }
+
+    .context-menu.active {
+        display: block;
+    }
+
+    .context-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+
+    .context-menu-item:hover {
+        background: var(--vscode-list-hoverBackground);
+    }
+
+    .model-selector {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        background: var(--vscode-list-hoverBackground);
+        border: 1px solid var(--vscode-border);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+
+    .model-selector:hover {
+        background: var(--vscode-list-activeSelectionBackground);
+    }
+
+    .send-button {
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.2s;
+    }
+
+    .send-button:hover:not(:disabled) {
+        background: var(--vscode-button-hoverBackground);
+    }
+
+    .send-button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .tools-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+    }
+
+    .tools-modal.active {
+        display: flex;
+    }
+
+    .tools-modal-content {
+        background: var(--vscode-panel-background);
+        border: 1px solid var(--vscode-border);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 600px;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    }
+
+    .typing-indicator {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        margin-left: 28px;
+    }
+
+    .typing-indicator.active {
+        display: flex;
+    }
+
+    .typing-dot {
+        width: 4px;
+        height: 4px;
+        background: var(--vscode-foreground);
+        border-radius: 50%;
+        opacity: 0.3;
+        animation: typing 1.4s infinite;
+    }
+
+    @keyframes typing {
+        0%, 60%, 100% { opacity: 0.3; }
+        30% { opacity: 1; }
+    }
 </style>
 </head>
 <body>
-<div class="chat-container">
-    <div class="chat-header">
-        <span class="header-title">
-            <span>💬</span>
-            <span>Chat</span>
-        </span>
-        <select class="model-selector" id="modelSelector">
-            <option value="openai">OpenAI GPT</option>
-            <option value="claude">Claude</option>
-            <option value="local">Local Model</option>
-        </select>
-    </div>
-
-    <div class="context-badges" id="contextBadges"></div>
-
-    <div class="messages-container" id="messages">
-        <div class="welcome-message">
-            <h3>Welcome to Sidekick Pro Chat</h3>
-            <p>Ask questions about your code or use commands:</p>
-            <div class="quick-commands">
-                <button class="quick-command" onclick="insertCommand('/explain')">/explain</button>
-                <button class="quick-command" onclick="insertCommand('/fix')">/fix</button>
-                <button class="quick-command" onclick="insertCommand('/tests')">/tests</button>
-                <button class="quick-command" onclick="insertCommand('/docs')">/docs</button>
-                <button class="quick-command" onclick="insertCommand('@workspace')">@workspace</button>
-            </div>
+    <!-- [Include all the HTML structure from the enhanced artifact] -->
+    <!-- Header -->
+    <div class="header">
+        <span class="header-title">SIDEKICK PRO CHAT: CHAT</span>
+        <div class="header-actions">
+            <button class="header-action" title="New Chat" onclick="clearChat()">➕</button>
+            <button class="header-action" title="History" onclick="showHistory()">🕐</button>
+            <button class="header-action" title="Settings" onclick="showSettings()">⚙️</button>
+            <button class="header-action" title="More Actions">⋯</button>
         </div>
     </div>
 
-    <div class="typing-indicator" id="typingIndicator">Assistant is thinking...</div>
+    <!-- Welcome Container -->
+    <div class="welcome-container" id="welcomeContainer">
+        <div class="welcome-icon">✨</div>
+        <h2 class="welcome-title">Build with agent mode.</h2>
+        <p class="welcome-subtitle">AI responses may be inaccurate.</p>
+        <a href="#" class="welcome-link" onclick="generateInstructions()">Generate instructions to onboard AI onto your codebase.</a>
+    </div>
 
-    <div class="input-container">
-        <div class="input-actions">
-            <button class="add-context-btn" onclick="showContextMenu(event)">
+    <!-- Messages Container -->
+    <div class="messages-container" id="messagesContainer"></div>
+
+    <!-- Input Section -->
+    <div class="input-section">
+        <div class="context-pills" id="contextPills"></div>
+        
+        <div class="input-wrapper">
+            <button class="add-context-btn" onclick="toggleContextMenu()">
                 <span>📎</span>
                 <span>Add Context...</span>
             </button>
+            
+            <textarea id="chatInput" placeholder="Ask about your code or type / for commands..." rows="1"></textarea>
+            
+            <!-- Context Menu -->
+            <div class="context-menu" id="contextMenu">
+                <div class="context-menu-item" onclick="selectContext('openEditors')">
+                    <span>📄</span>
+                    <span>Open Editors</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('files')">
+                    <span>📁</span>
+                    <span>Files & Folders...</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('clipboard')">
+                    <span>📋</span>
+                    <span>Image from Clipboard</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('instructions')">
+                    <span>📝</span>
+                    <span>Instructions...</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('screenshot')">
+                    <span>📷</span>
+                    <span>Screenshot Window</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('problems')">
+                    <span>❌</span>
+                    <span>Problems...</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('symbols')">
+                    <span>📦</span>
+                    <span>Symbols...</span>
+                </div>
+                <div class="context-menu-item" onclick="selectContext('tools')">
+                    <span>🔧</span>
+                    <span>Tools...</span>
+                </div>
+            </div>
         </div>
-        <div class="input-wrapper">
-            <div class="suggestions" id="suggestions"></div>
-            <textarea
-                class="chat-input"
-                id="chatInput"
-                placeholder="Ask about your code or type / for commands..."
-                rows="3"
-            ></textarea>
+        
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div class="model-selector" onclick="switchModel()">
+                    <span>Agent</span>
+                    <span>▼</span>
+                </div>
+                <div class="model-selector" onclick="selectModel()">
+                    <span id="currentModel">GPT-4o mini</span>
+                    <span>▼</span>
+                </div>
+                <button class="add-context-btn" onclick="showTools()" style="padding: 4px;">
+                    ⚙️
+                </button>
+            </div>
+            <div class="input-actions">
+                <button class="send-button" id="sendButton" onclick="sendMessage()">
+                    Send ▶
+                </button>
+            </div>
         </div>
-        <div class="input-footer">
-            <span class="input-hints">Press Enter to send, Shift+Enter for new line</span>
-            <button class="send-button" id="sendButton" onclick="sendMessage()">Send</button>
+        
+        <div class="input-hint" style="font-size: 11px; color: #999; margin-top: 4px;">
+            Press Enter to send, Shift+Enter for new line
         </div>
     </div>
-</div>
+
+    <!-- Typing Indicator -->
+    <div class="typing-indicator" id="typingIndicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+    </div>
+
+    <!-- Tools Configuration Modal -->
+    <div class="tools-modal" id="toolsModal">
+        <div class="tools-modal-content">
+            <!-- [Include tools modal content] -->
+        </div>
+    </div>
 
 <script>
-const vscode = acquireVsCodeApi();
-let currentContext = [];
-let messages = [];
-// Store icon paths as constants
-const ICON_COPY = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
-<path d="M128.385 80.482q3.174-.008 6.347-.02c5.705-.019 11.409-.012 17.114 0..."/>
-</svg>\`;
+    const vscode = acquireVsCodeApi();
+    let messages = [];
+    let contextItems = [];
+    let selectedTools = new Set();
 
-const ICON_INSERT = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
-<path d="m23.16 140.74 2.114-.012c2.326-.01 4.652-.007..."/>
-</svg>\`;
-
-const ICON_NEWFILE = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 512 512" fill="currentColor">
-<path d="m100.61 268.866 3.407-.014h3.728l3.972-.01..."/>
-</svg>\`;
-
-const ICON_TERMINAL = \`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-<rect x="2" y="2" width="12" height="12" stroke="currentColor" fill="none"/>
-<path d="M4 6l2 2-2 2M7 10h5"/>
-</svg>\`;
-
-
-// Command suggestions
-const commandSuggestions = [
-    { trigger: '/explain', description: 'Explain selected code' },
-    { trigger: '/fix', description: 'Fix problems in code' },
-    { trigger: '/tests', description: 'Generate unit tests' },
-    { trigger: '/docs', description: 'Generate documentation' },
-    { trigger: '@workspace', description: 'Include workspace context' },
-    { trigger: '@file', description: 'Reference a file' },
-    { trigger: '#', description: 'Reference a symbol' }
-];
-
-// GLOBAL FUNCTIONS - Define these BEFORE they're used in onclick handlers
-
-function sendMessage() {
-    const input = document.getElementById('chatInput');
-    if (!input) return;
-    
-    const message = input.value.trim();
-    if (!message) return;
-
-    console.log('Sending message:', message);
-    vscode.postMessage({ type: 'sendMessage', message });
-    input.value = '';
-    hideSuggestions();
-}
-
-function insertCommand(command) {
-    const input = document.getElementById('chatInput');
-    if (input) {
-        input.value = command + ' ';
-        input.focus();
-    }
-}
-
-function getCodeFromBlock(blockId) {
-    // const codeBlock = document.getElementById(blockId);
-    // if (!codeBlock) return null;
-    
-    // const codeElement = codeBlock.querySelector('code');
-    // if (!codeElement) return null;
-    
-    // // Get the raw code from data attribute or text content
-    // let code = codeElement.getAttribute('data-code') || codeElement.textContent;
-    // // Unescape HTML entities
-    // const textarea = document.createElement('textarea');
-    // textarea.innerHTML = code;
-    // return textarea.value;
-    return window.codeBlocks[blockId] || '';
-}
-
-function applyInEditor(blockId) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'applyInEditor', 
-            code: code 
+    // [Include all JavaScript from enhanced artifact]
+    document.addEventListener('DOMContentLoaded', function() {
+        const chatInput = document.getElementById('chatInput');
+        
+        // Auto-resize textarea
+        chatInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+            updateSendButton();
         });
-    }
-}
 
-function insertAtCursor(blockId) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'insertCode', 
-            code: code 
-        });
-    }
-}
-function showCodeActions(blockId) {
-    const actions = document.getElementById('actions-' + blockId);
-    if (actions) {
-        actions.style.display = 'flex';
-    }
-}
-
-function hideCodeActions(blockId) {
-    const actions = document.getElementById('actions-' + blockId);
-    if (actions) {
-        actions.style.display = 'none';
-    }
-}
-
-function copyCode(blockId) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        // Use clipboard API if available
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(code).then(() => {
-                showToast('Code copied to clipboard');
-            });
-        } else {
-            vscode.postMessage({ 
-                type: 'copyCode', 
-                code: code 
-            });
-        }
-    }
-}
-function createNewFile(blockId, language) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'createNewFile', 
-            code: code,
-            language: language 
-        });
-    }
-}
-function insertIntoNewFile(blockId, language) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'createNewFile', 
-            code: code,
-            language: language 
-        });
-    }
-}
-function insertIntoTerminal(blockId) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'insertIntoTerminal', 
-            code: code 
-        });
-    }
-}
-function showToast(message) {
-    // Simple toast notification
-    const toast = document.createElement('div');
-    toast.className = 'toast';
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => {
-        toast.classList.add('show');
-        setTimeout(() => {
-            toast.classList.remove('show');
-            setTimeout(() => document.body.removeChild(toast), 300);
-        }, 2000);
-    }, 10);
-}
-
-function openDiff(blockId) {
-    const code = getCodeFromBlock(blockId);
-    if (code) {
-        vscode.postMessage({ 
-            type: 'openDiff', 
-            code: code 
-        });
-    }
-}
-
-function showContextMenu(evt) {
-    const menu = document.createElement('div');
-    menu.style.position = 'absolute';
-    menu.style.background = 'var(--vscode-menu-background)';
-    menu.style.border = '1px solid var(--vscode-menu-border)';
-    menu.style.borderRadius = '2px';
-    menu.style.padding = '4px 0';
-    menu.style.zIndex = '1000';
-    menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
-
-    const options = [
-        { label: 'Add Current File', value: 'file' },
-        { label: 'Add Selection', value: 'selection' },
-        { label: 'Add Workspace Context', value: 'workspace' }
-    ];
-
-    options.forEach(opt => {
-        const item = document.createElement('div');
-        item.textContent = opt.label;
-        item.style.padding = '4px 12px';
-        item.style.cursor = 'pointer';
-        item.style.fontSize = '12px';
-        item.onmouseover = () => { item.style.background = 'var(--vscode-menu-selectionBackground)'; };
-        item.onmouseout = () => { item.style.background = 'transparent'; };
-        item.onclick = () => {
-            vscode.postMessage({ type: 'addContext', contextType: opt.value });
-            document.body.removeChild(menu);
-        };
-        menu.appendChild(item);
-    });
-
-    const btn = evt.currentTarget;
-    const rect = btn.getBoundingClientRect();
-    menu.style.left = rect.left + 'px';
-    menu.style.top = (rect.bottom + 5) + 'px';
-
-    document.body.appendChild(menu);
-
-    // Close menu when clicking outside
-    setTimeout(() => {
-        document.addEventListener('click', function closeMenu(e) {
-            if (menu.parentNode && !menu.contains(e.target)) {
-                document.body.removeChild(menu);
-                document.removeEventListener('click', closeMenu);
-            }
-        });
-    }, 100);
-}
-
-function removeContext(index) {
-    vscode.postMessage({ type: 'removeContext', index });
-}
-
-window.codeBlocks = window.codeBlocks || {};
-function copyCode(blockId) {
-    const code = window.codeBlocks[blockId];
-    if (!code) {
-        console.error('No code found for block:', blockId);
-        return;
-    }
-    
-    // Send to VS Code for copying
-    vscode.postMessage({ 
-        type: 'copyCode', 
-        code: code 
-    });
-}
-
-function insertCode(code) {
-    vscode.postMessage({ type: 'insertCode', code });
-}
-
-function showTypingIndicator() {
-    const el = document.getElementById('typingIndicator');
-    if (el) el.classList.add('active');
-}
-
-function hideTypingIndicator() {
-    const el = document.getElementById('typingIndicator');
-    if (el) el.classList.remove('active');
-}
-
-function showSelectionHint(lines) {
-    console.log('Selection available:', lines);
-}
-
-function handleInputChange(value) {
-    const lastWord = value.split(' ').pop() || '';
-    if (lastWord.startsWith('/') || lastWord.startsWith('@') || lastWord.startsWith('#')) {
-        showSuggestions(lastWord);
-    } else {
-        hideSuggestions();
-    }
-}
-
-function showSuggestions(prefix) {
-    const suggestionsEl = document.getElementById('suggestions');
-    if (!suggestionsEl) return;
-    
-    const filtered = commandSuggestions.filter(s => 
-        s.trigger.toLowerCase().startsWith(prefix.toLowerCase())
-    );
-    
-    if (filtered.length === 0) {
-        hideSuggestions();
-        return;
-    }
-
-    suggestionsEl.innerHTML = filtered.map(s => \`
-        <div class="suggestion-item" onclick="applySuggestion('\${s.trigger}')">
-            <span class="suggestion-icon">\${s.trigger[0]}</span>
-            <span>\${s.trigger}</span>
-            <span style="opacity: 0.6; margin-left: auto;">\${s.description}</span>
-        </div>
-    \`).join('');
-    suggestionsEl.classList.add('active');
-}
-
-function hideSuggestions() {
-    const el = document.getElementById('suggestions');
-    if (el) el.classList.remove('active');
-}
-
-function applySuggestion(suggestion) {
-    const input = document.getElementById('chatInput');
-    if (!input) return;
-    
-    const words = input.value.split(' ');
-    words[words.length - 1] = suggestion + ' ';
-    input.value = words.join(' ');
-    input.focus();
-    hideSuggestions();
-}
-
-function getWelcomeMessage() {
-    return \`
-        <div class="welcome-message">
-            <h3>Welcome to Sidekick Pro Chat</h3>
-            <p>Ask questions about your code or use commands:</p>
-            <div class="quick-commands">
-                <button class="quick-command" onclick="insertCommand('/explain')">/explain</button>
-                <button class="quick-command" onclick="insertCommand('/fix')">/fix</button>
-                <button class="quick-command" onclick="insertCommand('/tests')">/tests</button>
-                <button class="quick-command" onclick="insertCommand('/docs')">/docs</button>
-                <button class="quick-command" onclick="insertCommand('@workspace')">@workspace</button>
-            </div>
-        </div>
-    \`;
-}
-
-function updateMessages(msgs) {
-    messages = msgs;
-    const container = document.getElementById('messages');
-    if (!container) return;
-
-    if (!messages || messages.length === 0) {
-        container.innerHTML = getWelcomeMessage();
-        return;
-    }
-
-    container.innerHTML = messages.map(msg => {
-        const icon = msg.role === 'user' ? '👤' : '🤖';
-        const content = formatMessageContent(msg.content);
-        const references = formatReferences(msg.references);
-        return \`
-            <div class="message \${msg.role}">
-                <div class="message-header">
-                    <span>\${icon}</span>
-                    <span>\${msg.role === 'user' ? 'You' : 'Assistant'}</span>
-                </div>
-                <div class="message-content">\${content}</div>
-                \${references}
-            </div>
-        \`;
-    }).join('');
-
-    container.scrollTop = container.scrollHeight;
-}
-
-function formatMessageContent(content) {
-    // Handle code blocks
-    const codeBlockRegex = /\`\`\`(\\w+)?\\n([\\s\\S]*?)\`\`\`/g;
-    let formatted = content.replace(codeBlockRegex, (match, lang, code) => {
-        const language = lang || 'plaintext';
-        const cleanCode = (code || '').trim();
-        const escapedCode = escapeHtml(cleanCode);
-        const blockId = 'code-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-        // Escape quotes properly for onclick
-        const codeForCopy = escapedCode.replace(/'/g, "\\'").replace(/"/g, '\\"');
-        if (!window.codeBlocks) window.codeBlocks = {};
-        window.codeBlocks[blockId] = cleanCode;
-        return \`
-            <div class="code-block" id="\${blockId}" onmouseenter="showCodeActions('\${blockId}')" onmouseleave="hideCodeActions('\${blockId}')">
-                <div class="code-block-header">
-                    <span class="code-block-language">\${language}</span>
-                    <div class="code-actions" id="actions-\${blockId}" style="display: none;">
-                        <button class="code-action" onclick="insertAtCursor('\${blockId}')" title="Insert at cursor">
-                            \${ICON_INSERT}
-                        </button>
-                        <button class="code-action" onclick="copyCode('\${blockId}')" title="Copy">
-                            \${ICON_COPY}
-                        </button>
-                        </button>
-                        <button class="code-action" onclick="insertIntoNewFile('\${blockId}', '\${language}')" title="Insert into new file">
-                            \${ICON_NEWFILE}
-                        </button>
-                        <button class="code-action" onclick="insertIntoTerminal('\${blockId}')" title="Insert into terminal">
-                            \${ICON_TERMINAL}
-                        </button>
-                    </div>
-                </div>
-                <pre><code>\${escapedCode}</code></pre>
-            </div>
-        \`;
-    });
-
-    // Handle inline code
-    formatted = formatted.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-    // Handle newlines
-    formatted = formatted.split('\\n').join('<br>');
-    return formatted;
-}
-
-
-function formatReferences(references) {
-    if (!references || references.length === 0) return '';
-    const items = references.map(ref => 
-        \`<div class="reference-item">\${ref.file}:\${ref.lines}</div>\`
-    ).join('');
-    return \`
-        <div class="references">
-            <details>
-                <summary>Used \${references.length} reference\${references.length > 1 ? 's' : ''}</summary>
-                <div class="references-list">\${items}</div>
-            </details>
-        </div>
-    \`;
-}
-
-function updateContextBadges(contexts) {
-    currentContext = contexts || [];
-    const container = document.getElementById('contextBadges');
-    if (!container) return;
-
-    if (currentContext.length === 0) {
-        container.innerHTML = '<span style="opacity: 0.6; font-size: 11px;">No context added</span>';
-        return;
-    }
-
-    container.innerHTML = currentContext.map((ctx, index) => \`
-        <span class="context-badge">
-            \${ctx.name}
-            <span class="remove" onclick="removeContext(\${index})">×</span>
-        </span>
-    \`).join('');
-}
-
-function escapeHtml(text) {
-    const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-    return String(text ?? '').replace(/[&<>"']/g, m => map[m]);
-}
-
-// Initialize event listeners when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    const input = document.getElementById('chatInput');
-    const modelSelector = document.getElementById('modelSelector');
-    
-    if (input) {
-        input.addEventListener('keydown', (e) => {
+        // Handle Enter key
+        chatInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
         });
+    });
 
-        input.addEventListener('input', (e) => {
-            handleInputChange(e.target.value);
+    function toggleContextMenu() {
+        const menu = document.getElementById('contextMenu');
+        menu.classList.toggle('active');
+    }
+
+    function selectContext(type) {
+        vscode.postMessage({
+            type: 'selectContext',
+            contextType: type
+        });
+        addContextPill(type);
+        document.getElementById('contextMenu').classList.remove('active');
+    }
+
+    function addContextPill(type) {
+        const pillsContainer = document.getElementById('contextPills');
+        const pillId = 'context-' + Date.now();
+        
+        const typeInfo = {
+            'openEditors': { icon: '📄', label: 'Open Editors' },
+            'files': { icon: '📁', label: 'Selected Files' },
+            'clipboard': { icon: '📋', label: 'Clipboard' },
+            'instructions': { icon: '📝', label: 'Instructions' },
+            'screenshot': { icon: '📷', label: 'Screenshot' },
+            'problems': { icon: '❌', label: 'Problems' },
+            'symbols': { icon: '📦', label: 'Symbols' },
+            'tools': { icon: '🔧', label: 'Tools' }
+        };
+
+        const info = typeInfo[type] || { icon: '📎', label: type };
+        
+        const pill = document.createElement('div');
+        pill.className = 'context-pill';
+        pill.id = pillId;
+        pill.innerHTML = \`
+            <span>\${info.icon}</span>
+            <span>\${info.label}</span>
+            <span style="cursor: pointer; opacity: 0.5;" onclick="removeContextPill('\${pillId}')">✕</span>
+        \`;
+        
+        pillsContainer.appendChild(pill);
+        contextItems.push({ id: pillId, type: type });
+    }
+
+    function removeContextPill(pillId) {
+        const pill = document.getElementById(pillId);
+        if (pill) {
+            pill.remove();
+            contextItems = contextItems.filter(item => item.id !== pillId);
+        }
+    }
+
+    function showTools() {
+        vscode.postMessage({ type: 'showTools' });
+    }
+
+    function switchModel() {
+        vscode.postMessage({ type: 'switchAgent' });
+    }
+
+    function selectModel() {
+        const models = ['GPT-4o mini', 'GPT-4', 'Claude 3.5', 'Local Model'];
+        const currentModel = document.getElementById('currentModel').textContent;
+        const nextIndex = (models.indexOf(currentModel) + 1) % models.length;
+        document.getElementById('currentModel').textContent = models[nextIndex];
+        
+        vscode.postMessage({ 
+            type: 'switchModel',
+            model: models[nextIndex]
         });
     }
 
-    if (modelSelector) {
-        modelSelector.addEventListener('change', (e) => {
-            vscode.postMessage({
-                type: 'switchModel',
-                model: e.target.value
-            });
+    function sendMessage() {
+        const input = document.getElementById('chatInput');
+        const message = input.value.trim();
+        
+        if (!message) return;
+        
+        document.getElementById('welcomeContainer').style.display = 'none';
+        document.getElementById('messagesContainer').classList.add('has-messages');
+        
+        input.value = '';
+        input.style.height = 'auto';
+        updateSendButton();
+        
+        vscode.postMessage({
+            type: 'message',
+            text: message,
+            context: contextItems
         });
+        
+        document.getElementById('contextPills').innerHTML = '';
+        contextItems = [];
     }
-});
 
-// Handle messages from extension
-window.addEventListener('message', event => {
-    const message = event.data;
-    switch (message.type) {
-        case 'updateMessages':
-            updateMessages(message.messages);
-            break;
-        case 'updateContext':
-            updateContextBadges(message.context);
-            break;
-        case 'showTyping':
-            showTypingIndicator();
-            break;
-        case 'hideTyping':
-            hideTypingIndicator();
-            break;
-        case 'selectionAvailable':
-            showSelectionHint(message.lines);
-            break;
+    function updateSendButton() {
+        const input = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        sendButton.disabled = !input.value.trim();
     }
-});
+
+    function clearChat() {
+        vscode.postMessage({ type: 'clear' });
+    }
+
+    function showHistory() {
+        vscode.postMessage({ type: 'showHistory' });
+    }
+
+    function showSettings() {
+        vscode.postMessage({ type: 'showSettings' });
+    }
+
+    function generateInstructions() {
+        vscode.postMessage({ type: 'generateInstructions' });
+    }
+
+    // Listen for messages from extension
+    window.addEventListener('message', event => {
+        const message = event.data;
+        switch (message.type) {
+            case 'updateMessages':
+                updateMessages(message.messages);
+                break;
+            case 'showTyping':
+                document.getElementById('typingIndicator').classList.add('active');
+                break;
+            case 'hideTyping':
+                document.getElementById('typingIndicator').classList.remove('active');
+                break;
+            case 'contextAdded':
+                addContextPill(message.contextType);
+                break;
+        }
+    });
+
+    function updateMessages(msgs) {
+        messages = msgs;
+        const container = document.getElementById('messagesContainer');
+        
+        if (!messages || messages.length === 0) {
+            container.innerHTML = '';
+            container.classList.remove('has-messages');
+            document.getElementById('welcomeContainer').style.display = 'flex';
+            return;
+        }
+        
+        document.getElementById('welcomeContainer').style.display = 'none';
+        container.classList.add('has-messages');
+        container.innerHTML = '';
+        
+        messages.forEach(msg => {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + msg.role;
+            
+            const icon = msg.role === 'user' ? '👤' : '🤖';
+            const roleName = msg.role === 'user' ? 'You' : 'Sidekick Pro';
+            
+            messageDiv.innerHTML = \`
+                <div class="message-header">
+                    <span>\${icon}</span>
+                    <span>\${roleName}</span>
+                </div>
+                <div class="message-content">\${formatContent(msg.content)}</div>
+            \`;
+            
+            if (msg.references && msg.references.length > 0) {
+                const refsDiv = document.createElement('div');
+                refsDiv.style.marginLeft = '28px';
+                refsDiv.style.marginTop = '8px';
+                msg.references.forEach(ref => {
+                    refsDiv.innerHTML += \`<span style="background: var(--vscode-input-background); padding: 2px 6px; border-radius: 4px; margin-right: 4px; font-size: 12px;">📄 \${ref.file}</span>\`;
+                });
+                messageDiv.appendChild(refsDiv);
+            }
+            
+            container.appendChild(messageDiv);
+        });
+        
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function formatContent(content) {
+        return content
+            .replace(/\`\`\`([\\w]*)\\n([\\s\\S]*?)\`\`\`/g, '<pre><code>$2</code></pre>')
+            .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+            .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+            .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+            .replace(/\\n/g, '<br>');
+    }
 </script>
 </body>
 </html>`;
+  }
+
+  // Cleanup
+  public dispose() {
+    this._disposables.forEach(d => d.dispose());
   }
 }

@@ -312,7 +312,8 @@ export class LocalAIProvider {
         "-ngl", useGpu ? "99" : "0",
         "--mlock",
         "--no-mmap",
-        "-t", "4"
+        "-t", "4",
+        '--log-disable' 
       ];
       
       console.log(`Starting server: ${llamaPath} ${args.join(" ")}`);

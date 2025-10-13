@@ -13,7 +13,7 @@ export class ModelService {
   private config: any = {};
   private localAI: LocalAIProvider | null = null;
   private contextKeeperUrl: string = "";
-  private currentProvider: "openai" | "local" = "local";
+  private currentProvider: "openai" | "local" | "claude" | "anthropic" = "local";
 
   private contextExtractor = ContextExtractor.getInstance();
   private cache = SmartCache.getInstance();
@@ -26,6 +26,9 @@ export class ModelService {
     totalRequests: 0,
     avgResponseTime: 0
   };
+
+  private _onDidChangeProvider = new vscode.EventEmitter<string>();
+  public readonly onDidChangeProvider = this._onDidChangeProvider.event;
 
   constructor(private context: vscode.ExtensionContext) {
     this.context = context;
@@ -42,6 +45,223 @@ export class ModelService {
         }
   }
 
+  private getProviderDisplayName(provider: string): string {
+    const names: Record<string, string> = {
+      'openai': 'OpenAI GPT',
+      'local': 'Local AI (Offline)',
+      'claude': 'Claude (Anthropic)',
+      'anthropic': 'Claude (Anthropic)'
+    };
+    return names[provider] || provider;
+  }
+
+  private async configureOpenAI(): Promise<void> {
+    const apiKey = await vscode.window.showInputBox({
+      prompt: 'Enter your OpenAI API key',
+      placeHolder: 'sk-...',
+      password: true,
+      validateInput: (value) => {
+        if (!value || !value.startsWith('sk-')) {
+          return 'Invalid API key format';
+        }
+        return null;
+      }
+    });
+    
+    if (apiKey) {
+      // Update VS Code settings
+      const config = vscode.workspace.getConfiguration('sidekickPro');
+      await config.update('openaiApiKey', apiKey, vscode.ConfigurationTarget.Global);
+      
+      // Update internal config
+      this.config.openaiKey = apiKey;
+      this.config.provider = 'openai';
+      
+      // Also update .env file if it exists
+      this.updateEnvFile('OPENAI_API_KEY', apiKey);
+      
+      vscode.window.showInformationMessage('OpenAI API key configured successfully');
+    }
+  }
+
+  private isAnthropicConfigured(): boolean {
+    const config = vscode.workspace.getConfiguration('sidekickPro');
+    const anthropicKey = config.get<string>('anthropicApiKey') || 
+                        process.env.ANTHROPIC_API_KEY || 
+                        this.config.anthropicKey;
+    
+    return !!(anthropicKey && anthropicKey.startsWith('sk-'));
+  }
+
+  private async updateProviderConfiguration(provider: string): Promise<void> {
+    const config = vscode.workspace.getConfiguration('sidekickPro');
+    await config.update('preferredProvider', provider, vscode.ConfigurationTarget.Global);
+    
+    // Update .env file if it exists
+    this.updateEnvFile('DEFAULT_MODEL_PROVIDER', provider);
+    
+    // Reload configuration
+    this.loadConfiguration();
+  }
+
+  private updateEnvFile(key: string, value: string): void {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const envPaths = [
+      path.join(__dirname, "..", "..", ".env"),
+      workspaceFolder ? path.join(workspaceFolder.uri.fsPath, ".env") : null
+    ].filter(Boolean) as string[];
+    
+    for (const envPath of envPaths) {
+      if (fs.existsSync(envPath)) {
+        try {
+          let content = fs.readFileSync(envPath, 'utf8');
+          const regex = new RegExp(`^${key}=.*$`, 'gm');
+          
+          if (regex.test(content)) {
+            content = content.replace(regex, `${key}=${value}`);
+          } else {
+            content += `\n${key}=${value}`;
+          }
+          
+          fs.writeFileSync(envPath, content);
+          console.log(`Updated ${key} in ${envPath}`);
+          break;
+        } catch (error) {
+          console.error(`Failed to update .env file: ${error}`);
+        }
+      }
+    }
+  }
+
+  public getAvailableProviders(): Array<{id: string, name: string, available: boolean}> {
+    return [
+      {
+        id: 'openai',
+        name: 'OpenAI GPT',
+        available: this.isOpenAIConfigured()
+      },
+      {
+        id: 'local',
+        name: 'Local AI (Offline)',
+        available: true // Always available, will download if needed
+      },
+      {
+        id: 'claude',
+        name: 'Claude (Anthropic)',
+        available: this.isAnthropicConfigured()
+      }
+    ];
+  }
+  public async showProviderPicker(): Promise<void> {
+    const providers = this.getAvailableProviders();
+    
+    const items = providers.map(p => ({
+      label: p.name,
+      description: p.id === this.currentProvider ? '✓ Current' : '',
+      detail: p.available ? 'Available' : 'Not configured',
+      id: p.id,
+      available: p.available
+    }));
+    
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select AI Provider',
+      title: 'Switch AI Provider'
+    });
+    
+    if (selected && selected.available) {
+      await this.switchProvider(selected.id as any);
+    } else if (selected && !selected.available) {
+      vscode.window.showWarningMessage(
+        `${selected.label} is not configured. Please add API keys in settings.`
+      );
+    }
+  }
+
+
+  public async switchProvider(provider: "openai" | "local" | "claude" | "anthropic"): Promise<boolean> {
+    console.log(`Switching provider from ${this.currentProvider} to ${provider}`);
+    
+    // Validate provider availability
+    switch (provider) {
+      case 'openai':
+        if (!this.isOpenAIConfigured()) {
+          const configure = await vscode.window.showWarningMessage(
+            'OpenAI API key not configured. Would you like to configure it now?',
+            'Configure',
+            'Cancel'
+          );
+          
+          if (configure === 'Configure') {
+            await this.configureOpenAI();
+          }
+          return false;
+        }
+        break;
+        
+      case 'claude':
+      case 'anthropic':
+        // Check if Anthropic/Claude is configured
+        if (!this.isAnthropicConfigured()) {
+          vscode.window.showWarningMessage(
+            'Anthropic API key not configured. Add ANTHROPIC_API_KEY to your settings.'
+          );
+          return false;
+        }
+        break;
+        
+      case 'local':
+        // Initialize LocalAI if not already done
+        if (!this.localAI) {
+          this.localAI = new LocalAIProvider(this.context);
+          await this.localAI.initialize();
+        }
+        
+        // Check if local model is available
+        const status = await this.localAI.checkModelStatus();
+        if (!status.isReady) {
+          const setup = await vscode.window.showWarningMessage(
+            'Local AI model not found. Would you like to download it?',
+            'Download',
+            'Cancel'
+          );
+          
+          if (setup === 'Download') {
+            // await this.localAI.downloadModel();
+          }
+          return false;
+        }
+        break;
+    }
+    
+    // Update current provider
+    const previousProvider = this.currentProvider;
+    this.currentProvider = provider;
+    
+    // Update configuration
+    await this.updateProviderConfiguration(provider);
+    
+    // Clear cache when switching providers
+    this.cache.clear();
+    
+    // Notify listeners
+    this._onDidChangeProvider.fire(provider);
+    
+    // Show confirmation
+    vscode.window.showInformationMessage(
+      `✅ Switched to ${this.getProviderDisplayName(provider)}`
+    );
+    
+    // Update status bar if it exists
+    vscode.commands.executeCommand('sidekick-pro.updateStatusBar');
+    
+    console.log(`Provider switched successfully from ${previousProvider} to ${provider}`);
+    return true;
+  }
+
+  // public getCurrentProvider(): string {
+  //   return this.currentProvider;
+  // }
+
   public loadConfiguration(): void {
         // First, keep existing environment variables
         this.loadEnvironment();
@@ -53,6 +273,12 @@ export class ModelService {
         const openaiKey = vsConfig.get<string>('openaiApiKey');
         if (openaiKey && openaiKey.trim() !== '') {
             this.config.openaiKey = openaiKey;
+        }
+
+        // Check for Anthropic API key
+        const anthropicKey = vsConfig.get<string>('anthropicApiKey');
+        if (anthropicKey && anthropicKey.trim() !== '') {
+            this.config.anthropicKey = anthropicKey;
         }
         
         // Check for model preference
@@ -74,7 +300,7 @@ export class ModelService {
         
         // Check for preferred provider setting
         const preferredProvider = vsConfig.get<string>('preferredProvider');
-        if (preferredProvider && (preferredProvider === 'openai' || preferredProvider === 'local')) {
+        if (preferredProvider && ['openai', 'local', 'claude', 'anthropic'].includes(preferredProvider)) {
             this.config.provider = preferredProvider;
         }
         
@@ -92,6 +318,8 @@ export class ModelService {
         // Update current provider based on new configuration
         if (this.config.provider === 'openai' && this.isOpenAIConfigured()) {
             this.currentProvider = 'openai';
+        } else if ((this.config.provider === 'claude' || this.config.provider === 'anthropic') && this.isAnthropicConfigured()) {
+            this.currentProvider = 'claude';
         } else {
             this.currentProvider = 'local';
             // Initialize LocalAI if switching to local
@@ -128,6 +356,7 @@ export class ModelService {
     this.config = {
       provider: process.env.DEFAULT_MODEL_PROVIDER || "openai",
       openaiKey: process.env.OPENAI_API_KEY || "",
+      anthropicKey: process.env.ANTHROPIC_API_KEY || "",
       model: process.env.DEFAULT_MODEL_NAME || "gpt-4o-mini",
       codeModel: process.env.CODE_MODEL_NAME || "gpt-4o-mini",
       temperature: parseFloat(process.env.MODEL_TEMPERATURE || "0.7"),
@@ -136,6 +365,7 @@ export class ModelService {
     };
     console.log(`Model provider: ${this.config.provider}`);
     console.log(`OpenAI configured: ${this.isOpenAIConfigured()}`);
+    console.log(`Anthropic configured: ${this.isAnthropicConfigured()}`);
     this.contextKeeperUrl = process.env.CONTEXT_KEEPER_URL || 'http://localhost:8000';
   }
 
@@ -151,16 +381,104 @@ export class ModelService {
   // Removed duplicate implementation of isOpenAIConfigured
 
   // Main chat method - add optional languageId
-  async chat(message: string, context: string): Promise<string> {
-    if (this.isOpenAIConfigured()) {
-      return await this.chatWithOpenAI(message, context);
-    } else {
-      if (!this.localAI) {
-        this.localAI = new LocalAIProvider(this.context);
-        await this.localAI.initialize();
+  async chat(message: string, context: string, options?: any): Promise<string> {
+    this.metrics.totalRequests++;
+    const startTime = Date.now();
+    
+    try {
+      let response: string;
+      
+      switch (this.currentProvider) {
+        case 'openai':
+          response = await this.chatWithOpenAI(message, context);
+          break;
+        case 'claude':
+        case 'anthropic':
+          response = await this.chatWithAnthropic(message, context, options);
+          break;
+        case 'local':
+        default:
+          response = await this.chatWithLocal(message, context);
+          break;
       }
-      return await this.localAI.chat(message, context);
+      
+      // Update metrics
+      const responseTime = Date.now() - startTime;
+      this.metrics.avgResponseTime = 
+        (this.metrics.avgResponseTime * (this.metrics.apiCalls) + responseTime) / 
+        (this.metrics.apiCalls + 1);
+      this.metrics.apiCalls++;
+      
+      return response;
+    } catch (error) {
+      console.error(`Chat error with ${this.currentProvider}:`, error);
+      
+      // Fallback to local if other providers fail
+      if (this.currentProvider !== 'local') {
+        vscode.window.showWarningMessage(
+          `${this.getProviderDisplayName(this.currentProvider)} failed. Falling back to local AI.`
+        );
+        this.currentProvider = 'local';
+        return this.chatWithLocal(message, context);
+      }
+      
+      throw error;
     }
+  }
+
+  private async chatWithAnthropic(prompt: string, context: string, options?: any): Promise<string> {
+    const requestBody = {
+      model: options?.model || "claude-3-5-sonnet-20241022",
+      messages: [
+        { 
+          role: "user", 
+          content: `${context}\n\n${prompt}` 
+        }
+      ],
+      max_tokens: options?.maxTokens || 2000,
+      temperature: options?.temperature || this.config.temperature || 0.7,
+    };
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.config.anthropicKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Anthropic API error: ${error}`);
+      }
+
+      const data = (await response.json()) as {
+        content?: Array<{ text: string }>;
+      };
+      const text = data.content?.[0]?.text;
+      if (!text) {
+        throw new Error("Anthropic API returned an unexpected response shape");
+      }
+      return text;
+    } catch (error) {
+      console.error("Anthropic chat error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Chat with local AI model - NEW METHOD
+   */
+  private async chatWithLocal(prompt: string, context: string): Promise<string> {
+    if (!this.localAI) {
+      this.localAI = new LocalAIProvider(this.context);
+      await this.localAI.initialize();
+    }
+    
+    return this.localAI.chat(prompt, context);
   }
 
   // Code completion
@@ -913,5 +1231,11 @@ Rules:
       php: "PHPUnit",
     };
     return frameworks[languageId] || "appropriate testing framework";
+  }
+  public dispose() {
+    this._onDidChangeProvider.dispose();
+    if (this.localAI) {
+      // Clean up local AI resources if needed
+    }
   }
 }
