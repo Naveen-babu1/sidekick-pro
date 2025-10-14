@@ -103,37 +103,37 @@ export class LocalAIProvider {
       "Start Setup",
       "Skip"
     );
-    
+
     if (result !== "Start Setup") {
       return false;
     }
-    
+
     // Step 1: Find or download llama.cpp
     const llamaPath = await this.setupLlamaCpp();
     if (!llamaPath) {
       vscode.window.showErrorMessage("Setup incomplete: llama.cpp not found");
       return false;
     }
-    
+
     // Step 2: Find or download model
     const modelPath = await this.setupModel();
     if (!modelPath) {
       vscode.window.showErrorMessage("Setup incomplete: Model not found");
       return false;
     }
-    
+
     // Save configuration
     const config = vscode.workspace.getConfiguration("sidekick-ai");
     await config.update("llamaPath", llamaPath, true);
     await config.update("modelPath", modelPath, true);
-    
+
     vscode.window.showInformationMessage(
       "✅ Setup complete! Sidekick AI will now start automatically whenever you use it."
     );
-    
+
     return true;
   }
-  
+
   private async setupLlamaCpp(): Promise<string | null> {
     // First, try to auto-detect
     const autoDetected = await this.autoDetectLlamaCpp();
@@ -147,7 +147,7 @@ export class LocalAIProvider {
         return autoDetected;
       }
     }
-    
+
     // If not found, guide user
     const action = await vscode.window.showInformationMessage(
       "llama.cpp is required to run AI models locally. Do you have it installed?",
@@ -155,34 +155,36 @@ export class LocalAIProvider {
       "Download it",
       "Help"
     );
-    
+
     if (action === "I have it - let me select it") {
       const fileUri = await vscode.window.showOpenDialog({
         canSelectFiles: true,
-        filters: process.platform === "win32" 
-          ? { "Executable": ["exe"] }
-          : { "All Files": ["*"] },
-        title: "Select llama-server executable"
+        filters:
+          process.platform === "win32"
+            ? { Executable: ["exe"] }
+            : { "All Files": ["*"] },
+        title: "Select llama-server executable",
       });
-      
+
       if (fileUri?.[0]) {
         return fileUri[0].fsPath;
       }
     } else if (action === "Download it") {
       const platform = process.platform;
-      const url = platform === "win32"
-        ? "https://github.com/ggerganov/llama.cpp/releases"
-        : "https://github.com/ggerganov/llama.cpp#build";
+      const url =
+        platform === "win32"
+          ? "https://github.com/ggerganov/llama.cpp/releases"
+          : "https://github.com/ggerganov/llama.cpp#build";
       vscode.env.openExternal(vscode.Uri.parse(url));
-      
+
       await vscode.window.showInformationMessage(
         "After downloading and extracting llama.cpp, click OK",
         "OK"
       );
-      
+
       return this.setupLlamaCpp(); // Recursive call to select after download
     }
-    
+
     return null;
   }
 
@@ -198,7 +200,7 @@ export class LocalAIProvider {
       "/opt/llama.cpp/llama-server",
       path.join(os.homedir(), "llama.cpp", "llama-server"),
     ];
-    
+
     for (const p of possiblePaths) {
       try {
         await fs.access(p);
@@ -207,11 +209,13 @@ export class LocalAIProvider {
         // Continue checking
       }
     }
-    
+
     // Try to find in PATH
     try {
       const { stdout } = await promisify(exec)(
-        process.platform === "win32" ? "where llama-server" : "which llama-server"
+        process.platform === "win32"
+          ? "where llama-server"
+          : "which llama-server"
       );
       return stdout.trim();
     } catch {
@@ -226,34 +230,36 @@ export class LocalAIProvider {
       "Download recommended model",
       "Show options"
     );
-    
+
     if (action === "I have a model") {
       const fileUri = await vscode.window.showOpenDialog({
         canSelectFiles: true,
         filters: { "GGUF Models": ["gguf"] },
-        title: "Select your GGUF model file"
+        title: "Select your GGUF model file",
       });
-      
+
       if (fileUri?.[0]) {
         return fileUri[0].fsPath;
       }
     } else if (action === "Download recommended model") {
-      vscode.env.openExternal(vscode.Uri.parse(
-        "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
-      ));
-      
+      vscode.env.openExternal(
+        vscode.Uri.parse(
+          "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+        )
+      );
+
       await vscode.window.showInformationMessage(
         "Download the model file (1GB), save it anywhere, then click OK",
         "OK"
       );
-      
+
       return this.setupModel(); // Recursive call to select after download
     } else if (action === "Show options") {
-      vscode.env.openExternal(vscode.Uri.parse(
-        "https://huggingface.co/models?search=gguf%20code"
-      ));
+      vscode.env.openExternal(
+        vscode.Uri.parse("https://huggingface.co/models?search=gguf%20code")
+      );
     }
-    
+
     return null;
   }
 
@@ -263,12 +269,12 @@ export class LocalAIProvider {
       this.isServerRunning = true;
       return true;
     }
-    
+
     // Get configuration
     const config = vscode.workspace.getConfiguration("sidekick-ai");
     let modelPath = config.get<string>("modelPath");
     let llamaPath = config.get<string>("llamaPath");
-    
+
     if (!modelPath || !llamaPath) {
       const setupResult = await this.runFirstTimeSetup();
       if (!setupResult) {
@@ -278,66 +284,82 @@ export class LocalAIProvider {
       const configUpdated = vscode.workspace.getConfiguration("sidekick-ai");
       modelPath = configUpdated.get<string>("modelPath");
       llamaPath = configUpdated.get<string>("llamaPath");
-    
+
       if (!modelPath || !llamaPath) {
         return false;
       }
     }
-    
+
     // Start the server
     return await this.startServer(llamaPath, modelPath);
   }
 
-  private async startServer(llamaPath: string, modelPath: string): Promise<boolean> {
+  private async startServer(
+    llamaPath: string,
+    modelPath: string
+  ): Promise<boolean> {
     if (this.serverStartAttempts >= this.maxStartAttempts) {
       vscode.window.showErrorMessage(
         "Failed to start AI server after multiple attempts. Please check your configuration."
       );
       return false;
     }
-    
+
     this.serverStartAttempts++;
-    
+
     try {
       const config = vscode.workspace.getConfiguration("sidekick-ai");
       const port = config.get<number>("port") || 8080;
       const contextSize = config.get<number>("contextSize") || 4096;
       const useGpu = config.get<boolean>("useGpu") || false;
-      
+
       const args = [
-        "-m", modelPath,
-        "-c", contextSize.toString(),
-        "--port", port.toString(),
-        "--host", "127.0.0.1",
-        "-ngl", useGpu ? "99" : "0",
+        "-m",
+        modelPath,
+        "-c",
+        contextSize.toString(),
+        "--port",
+        port.toString(),
+        "--host",
+        "127.0.0.1",
+        "-ngl",
+        useGpu ? "99" : "0",
         "--mlock",
         "--no-mmap",
-        "-t", "4",
-        '--log-disable' 
+        "-t",
+        "4",
+        "--log-disable",
+        "--quiet", // Quiet mode
+        "--no-display-prompt",
       ];
-      
+
       console.log(`Starting server: ${llamaPath} ${args.join(" ")}`);
-      
+
       // Kill any existing process
       if (this.llamaProcess) {
         this.llamaProcess.kill();
         this.llamaProcess = null;
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for process to die
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for process to die
       }
-      
+
       // Start new process
       this.llamaProcess = spawn(llamaPath, args, {
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       });
-      
+
       this.llamaProcess.stdout?.on("data", (data: Buffer) => {
         console.log(`llama.cpp: ${data.toString()}`);
       });
-      
+
       this.llamaProcess.stderr?.on("data", (data: Buffer) => {
-        console.error(`llama.cpp error: ${data.toString()}`);
+        const output = data.toString();
+        // Only log actual errors, not token processing
+        if (output.includes("error") && !output.includes("slot process_toke")) {
+          console.error(`llama.cpp error: ${output}`);
+        }
       });
-      
+
       this.llamaProcess.on("error", (error) => {
         console.error("Failed to start llama.cpp:", error);
         this.isServerRunning = false;
@@ -345,11 +367,11 @@ export class LocalAIProvider {
           `Failed to start AI server: ${error.message}`
         );
       });
-      
+
       this.llamaProcess.on("close", (code) => {
         console.log(`llama.cpp exited with code ${code}`);
         this.isServerRunning = false;
-        
+
         // Auto-restart if it crashed unexpectedly
         if (code !== 0 && code !== null) {
           setTimeout(() => {
@@ -357,7 +379,7 @@ export class LocalAIProvider {
           }, 5000);
         }
       });
-      
+
       // Wait for server to be ready
       const ready = await this.waitForServer();
       if (ready) {
@@ -366,14 +388,13 @@ export class LocalAIProvider {
         vscode.window.setStatusBarMessage("✅ Sidekick AI ready!", 3000);
         return true;
       }
-      
+
       return false;
     } catch (error) {
       console.error("Error starting server:", error);
       return false;
     }
   }
-  
 
   private async ensureModel(): Promise<string | null> {
     const config = vscode.workspace.getConfiguration("sidekick-ai");
@@ -485,13 +506,13 @@ export class LocalAIProvider {
       "127.0.0.1",
       "-ngl",
       this.currentModel.useGpu ? "99" : "0", // GPU layers
-      "--mlock", // Lock model in memory
+      // "--mlock", // Lock model in memory
       "--no-mmap", // Don't use memory mapping
       "-t",
       "4", // Number of threads
       "--ctx-size",
       this.currentModel.contextSize.toString(),
-      "--verbose",
+      // "--verbose",
     ];
 
     try {
@@ -521,7 +542,28 @@ export class LocalAIProvider {
 
       if (this.llamaProcess.stderr) {
         this.llamaProcess.stderr.on("data", (data: Buffer) => {
-          console.error(`llama.cpp error: ${data.toString()}`);
+          const output = data.toString();
+          // Filter out verbose llama.cpp logs
+          if (
+            !output.includes("slot process_toke") &&
+            !output.includes("srv  update_slots") &&
+            !output.includes("que    start_loop") &&
+            !output.includes("clear_adapter_lora") &&
+            !output.includes("set_embeddings") &&
+            !output.includes("srv  log_server_r") &&
+            !output.includes("Parsing input") &&
+            !output.includes("repack:") &&
+            !output.includes("Loading model") // Only during actual errors
+          ) {
+            // Only log if it contains important keywords
+            if (
+              output.includes("error") ||
+              output.includes("fail") ||
+              output.includes("exit")
+            ) {
+              console.error(`llama.cpp error: ${output}`);
+            }
+          }
         });
       }
 
@@ -858,14 +900,14 @@ ${currentLine}`;
     // Get language-specific patterns
     const language = languageId || this.detectLanguage(prompt);
     const patterns = LanguageService.getCompletionPatterns(language);
-    
+
     // Check language-specific patterns first
     for (const [pattern, completion] of Object.entries(patterns)) {
       if (lastLine.endsWith(pattern)) {
         return completion;
       }
     }
-    
+
     // Generic patterns that work across languages
     const genericPatterns: Record<string, string> = {
       "{": "\n  ",
@@ -877,7 +919,7 @@ ${currentLine}`;
       ";": "\n  ",
       ":": "\n    ", // Python/YAML indentation
     };
-    
+
     for (const [pattern, completion] of Object.entries(genericPatterns)) {
       if (lastLine.endsWith(pattern)) {
         return completion;
@@ -927,13 +969,22 @@ ${currentLine}`;
     });
   }
 
-  async explainCode(code: string, context: string, languageId?: string): Promise<string> {
+  async explainCode(
+    code: string,
+    context: string,
+    languageId?: string
+  ): Promise<string> {
     if (!this.isServerRunning) {
       await this.ensureServerRunning();
     }
 
     const language = languageId || this.detectLanguage(code);
-    const prompt = LanguageService.generatePrompt(language, 'explain', code, "");
+    const prompt = LanguageService.generatePrompt(
+      language,
+      "explain",
+      code,
+      ""
+    );
 
     try {
       const response = await fetch(`${this.llamaEndpoint}/completion`, {
@@ -979,7 +1030,12 @@ ${currentLine}`;
     }
 
     const language = languageId || this.detectLanguage(code);
-    const prompt = LanguageService.generatePrompt(language, 'refactor', code, instruction);
+    const prompt = LanguageService.generatePrompt(
+      language,
+      "refactor",
+      code,
+      instruction
+    );
 
     try {
       const response = await fetch(`${this.llamaEndpoint}/completion`, {
@@ -1017,13 +1073,17 @@ ${currentLine}`;
     }
   }
 
-  async generateTests(code: string, context: string, languageId?: string): Promise<string> {
+  async generateTests(
+    code: string,
+    context: string,
+    languageId?: string
+  ): Promise<string> {
     if (!this.isServerRunning) {
       await this.ensureServerRunning();
     }
 
     const language = languageId || this.detectLanguage(code);
-    const prompt = LanguageService.generatePrompt(language, 'test', code, "");
+    const prompt = LanguageService.generatePrompt(language, "test", code, "");
 
     try {
       const response = await fetch(`${this.llamaEndpoint}/completion`, {
@@ -1206,8 +1266,7 @@ Assistant:`;
 
       if (this.isServerRunning) {
         statusItem.text = "$(check) Sidekick AI";
-        statusItem.tooltip =
-          "Sidekick AI is ready - Ctrl+Shift+A for chat";
+        statusItem.tooltip = "Sidekick AI is ready - Ctrl+Shift+A for chat";
       } else {
         statusItem.text = "$(warning) Sidekick AI";
         statusItem.tooltip = "Click to setup";
@@ -1254,7 +1313,7 @@ Assistant:`;
     if (this.serverCheckInterval) {
       clearInterval(this.serverCheckInterval);
     }
-    
+
     if (this.llamaProcess) {
       this.llamaProcess.kill();
       this.llamaProcess = null;

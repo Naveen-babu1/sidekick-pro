@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
 import { ModelService } from "../services/modelService";
 import { CodeIndexer } from "../indexer/CodeIndexer";
-import { ContextExtractor, ExtractedContext } from "../services/ContextExtractor";
+import {
+  ContextExtractor,
+  ExtractedContext,
+} from "../services/ContextExtractor";
 import { SmartCache } from "../services/SmartCache";
 import { PromptTemplates } from "../services/PromptTemplates";
 
@@ -33,7 +36,15 @@ interface CodeContext {
 // New interfaces for GitHub Copilot-style features
 interface ContextItem {
   id: string;
-  type: 'openEditors' | 'files' | 'clipboard' | 'instructions' | 'screenshot' | 'problems' | 'symbols' | 'tools';
+  type:
+    | "openEditors"
+    | "files"
+    | "clipboard"
+    | "instructions"
+    | "screenshot"
+    | "problems"
+    | "symbols"
+    | "tools";
   content?: string;
   files?: string[];
 }
@@ -43,7 +54,7 @@ interface Tool {
   name: string;
   description: string;
   enabled: boolean;
-  category: 'builtin' | 'extension' | 'mcp';
+  category: "builtin" | "extension" | "mcp";
 }
 
 export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
@@ -57,11 +68,11 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   private readonly _smartCache = SmartCache.getInstance();
   private readonly _promptTemplates = PromptTemplates.getInstance();
   private _extractedContextCache = new Map<string, ExtractedContext>();
-  
+
   // New properties for GitHub Copilot-style features
   private _activeContextItems: ContextItem[] = [];
   private _availableTools: Map<string, Tool> = new Map();
-  private _selectedModel: string = 'GPT-4o mini';
+  private _selectedModel: string = "GPT-4o mini";
   private _agentMode: boolean = true;
 
   constructor(
@@ -85,6 +96,9 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
     };
+
+    webviewView.title = "Chat";
+    webviewView.description = "Sidekick Pro Chat";
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
@@ -176,7 +190,10 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async handleUserMessage(message: string, contextItems?: ContextItem[]) {
+  private async handleUserMessage(
+    message: string,
+    contextItems?: ContextItem[]
+  ) {
     if (!message.trim()) return;
 
     const { command, mentions, text } = this.parseMessage(message);
@@ -210,7 +227,11 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
         response = result.response;
         references = result.references || [];
       } else {
-        const result = await this.processWithContext(text, mentions, contextItems);
+        const result = await this.processWithContext(
+          text,
+          mentions,
+          contextItems
+        );
         response = result.response;
         references = result.references || [];
       }
@@ -241,71 +262,326 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   private async handleContextSelection(contextType: string) {
     let contextContent: any = null;
     
-    switch (contextType) {
-      case 'openEditors':
-        contextContent = await this.getOpenEditorsContext();
-        break;
-      case 'files':
-        contextContent = await this.selectFilesForContext();
-        break;
-      case 'clipboard':
-        contextContent = await this.getClipboardContext();
-        break;
-      case 'instructions':
-        contextContent = await this.getInstructionsContext();
-        break;
-      case 'screenshot':
-        contextContent = await this.captureScreenshot();
-        break;
-      case 'problems':
-        contextContent = await this.getProblemsContext();
-        break;
-      case 'symbols':
-        contextContent = await this.getSymbolsContext();
-        break;
-      case 'tools':
-        contextContent = await this.configureTools();
-        break;
+    try {
+        switch (contextType) {
+            case 'openEditors':
+                contextContent = await this.getOpenEditorsContext();
+                if (contextContent && contextContent.length > 0) {
+                    // Add context item with proper formatting
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'openEditors',
+                        files: contextContent,
+                        content: `Open files: ${contextContent.join(', ')}`
+                    });
+                    
+                    // Send visual feedback to webview
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'openEditors',
+                        display: `📂 ${contextContent.length} open files`,
+                        details: contextContent
+                    });
+                    
+                    vscode.window.showInformationMessage(`Added ${contextContent.length} open files to context`);
+                }
+                break;
+                
+            case 'files':
+                contextContent = await this.selectFilesForContext();
+                if (contextContent && contextContent.length > 0) {
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'files',
+                        files: contextContent.map((f: any) => f.path),
+                        content: `Selected files: ${contextContent.map((f: any) => f.name).join(', ')}`
+                    });
+                    
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'files',
+                        display: `📄 ${contextContent.length} selected files`,
+                        details: contextContent.map((f: any) => f.name)
+                    });
+                }
+                break;
+                
+            case 'clipboard':
+                contextContent = await this.getClipboardContext();
+                if (contextContent) {
+                    const preview = contextContent.substring(0, 50) + (contextContent.length > 50 ? '...' : '');
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'clipboard',
+                        content: contextContent
+                    });
+                    
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'clipboard',
+                        display: `📋 Clipboard (${contextContent.length} chars)`,
+                        details: preview
+                    });
+                    
+                    vscode.window.showInformationMessage('Clipboard content added to context');
+                }
+                break;
+                
+            case 'instructions':
+                contextContent = await this.getInstructionsContext();
+                if (contextContent) {
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'instructions',
+                        content: contextContent
+                    });
+                    
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'instructions',
+                        display: `📝 Custom instructions`,
+                        details: contextContent.substring(0, 100) + '...'
+                    });
+                }
+                break;
+                
+            case 'screenshot':
+                // Enhanced screenshot handling with options
+                const screenshotOption = await vscode.window.showQuickPick([
+                    'Capture Active Editor',
+                    'Capture Selection',
+                    'Capture Window',
+                    'Paste from Clipboard'
+                ], {
+                    placeHolder: 'Select screenshot capture method'
+                });
+                
+                if (screenshotOption) {
+                    contextContent = await this.captureScreenshot(screenshotOption);
+                    if (contextContent) {
+                        this._activeContextItems.push({
+                            id: `context-${Date.now()}`,
+                            type: 'screenshot',
+                            content: contextContent
+                        });
+                        
+                        this._view?.webview.postMessage({
+                            type: 'contextAdded',
+                            contextType: 'screenshot',
+                            display: `📸 Screenshot (${screenshotOption})`,
+                            details: 'Image captured'
+                        });
+                    }
+                }
+                break;
+                
+            case 'problems':
+                contextContent = await this.getProblemsContext();
+                if (contextContent && contextContent.length > 0) {
+                    const errorCount = contextContent.filter((p: any) => p.severity === 'error').length;
+                    const warningCount = contextContent.filter((p: any) => p.severity === 'warning').length;
+                    
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'problems',
+                        content: JSON.stringify(contextContent, null, 2)
+                    });
+                    
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'problems',
+                        display: `⚠️ ${errorCount} errors, ${warningCount} warnings`,
+                        details: contextContent.slice(0, 5).map((p: any) => `${p.source}: ${p.message}`)
+                    });
+                }
+                break;
+                
+            case 'symbols':
+                contextContent = await this.getSymbolsContext();
+                if (contextContent && contextContent.length > 0) {
+                    const symbolsByType: Record<string, any[]> = {};
+                    contextContent.forEach((s: any) => {
+                        if (!symbolsByType[s.kind]) symbolsByType[s.kind] = [];
+                        symbolsByType[s.kind].push(s);
+                    });
+                    
+                    this._activeContextItems.push({
+                        id: `context-${Date.now()}`,
+                        type: 'symbols',
+                        content: JSON.stringify(contextContent, null, 2)
+                    });
+                    
+                    const summary = Object.entries(symbolsByType)
+                        .map(([type, symbols]) => `${symbols.length} ${type}s`)
+                        .join(', ');
+                    
+                    this._view?.webview.postMessage({
+                        type: 'contextAdded',
+                        contextType: 'symbols',
+                        display: `🔤 Symbols: ${summary}`,
+                        details: contextContent.slice(0, 10).map((s: any) => `${s.kind}: ${s.name}`)
+                    });
+                }
+                break;
+                
+            case 'tools':
+                contextContent = await this.configureTools();
+                if (contextContent) {
+                    this._view?.webview.postMessage({
+                        type: 'toolsConfigured',
+                        tools: contextContent
+                    });
+                }
+                break;
+        }
+        
+        // Update the webview to show active contexts
+        this.updateActiveContextsDisplay();
+        
+    } catch (error) {
+        vscode.window.showErrorMessage(`Failed to add context: ${error}`);
+        console.error('Context selection error:', error);
     }
+
     
-    if (contextContent) {
-      this._activeContextItems.push({
-        id: `context-${Date.now()}`,
-        type: contextType as any,
-        content: contextContent
-      });
-      
-      // Notify webview that context was added
-      this._view?.webview.postMessage({
-        type: 'contextAdded',
-        contextType: contextType
-      });
-    }
-  }
+}
 
   // Context gathering methods
   private async getOpenEditorsContext(): Promise<string[]> {
     const editors = vscode.window.tabGroups.all
-      .flatMap(group => group.tabs)
-      .filter(tab => tab.input instanceof vscode.TabInputText)
-      .map(tab => (tab.input as vscode.TabInputText).uri.fsPath);
-    
+      .flatMap((group) => group.tabs)
+      .filter((tab) => tab.input instanceof vscode.TabInputText)
+      .map((tab) => (tab.input as vscode.TabInputText).uri.fsPath);
+
     return editors;
   }
 
-  private async selectFilesForContext(): Promise<string[]> {
-    const files = await vscode.window.showOpenDialog({
-      canSelectMany: true,
-      canSelectFiles: true,
-      canSelectFolders: true,
-      title: 'Select files or folders to add as context'
+  private updateActiveContextsDisplay() {
+    // Send updated context list to webview
+    const contextSummary = this._activeContextItems.map(item => ({
+        id: item.id,
+        type: item.type,
+        summary: this.getContextSummary(item)
+    }));
+    
+    this._view?.webview.postMessage({
+        type: 'updateActiveContexts',
+        contexts: contextSummary
+    });
+}
+
+  private getContextSummary(item: ContextItem): string {
+    switch (item.type) {
+        case 'openEditors':
+            return `${item.files?.length || 0} open files`;
+        case 'files':
+            return `${item.files?.length || 0} selected files`;
+        case 'clipboard':
+            return `Clipboard (${item.content?.length || 0} chars)`;
+        case 'instructions':
+            return 'Custom instructions';
+        case 'screenshot':
+            return 'Screenshot';
+        case 'problems':
+            const problems = JSON.parse(item.content || '[]');
+            return `${problems.length} problems`;
+        case 'symbols':
+            const symbols = JSON.parse(item.content || '[]');
+            return `${symbols.length} symbols`;
+        case 'tools':
+            return 'Tools configured';
+        default:
+            return item.type;
+    }
+}
+
+  private async selectFilesForContext(): Promise<any[]> {
+    // Show a multi-step selection process
+    const option = await vscode.window.showQuickPick([
+        '📁 Select files from workspace',
+        '📂 Select entire folder',
+        '🔍 Search for files',
+        '📝 Recently edited files'
+    ], {
+        placeHolder: 'How would you like to select files?'
     });
     
-    if (files) {
-      return files.map(f => f.fsPath);
+    if (!option) return [];
+    
+    let files: vscode.Uri[] = [];
+    
+    if (option.includes('Select files from workspace')) {
+        const selected = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            openLabel: 'Add to Context',
+            filters: {
+                'All Files': ['*'],
+                'Code Files': ['ts', 'js', 'tsx', 'jsx', 'py', 'java', 'cs', 'cpp', 'go', 'rs'],
+                'Documents': ['md', 'txt', 'json', 'xml', 'yaml', 'yml']
+            }
+        });
+        files = selected || [];
+        
+    } else if (option.includes('Select entire folder')) {
+        const selected = await vscode.window.showOpenDialog({
+            canSelectFolders: true,
+            canSelectFiles: false,
+            openLabel: 'Add Folder to Context'
+        });
+        
+        if (selected && selected[0]) {
+            // Get all files in the folder (non-recursive for performance)
+            const pattern = new vscode.RelativePattern(selected[0], '*.*');
+            files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', 20);
+        }
+        
+    } else if (option.includes('Search for files')) {
+        const pattern = await vscode.window.showInputBox({
+            prompt: 'Enter file pattern (e.g., *.ts, **/*.json)',
+            placeHolder: '**/*.ts'
+        });
+        
+        if (pattern) {
+            files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', 20);
+        }
+        
+    } else if (option.includes('Recently edited')) {
+        // Get recently edited files from workspace
+        const recentFiles = vscode.workspace.textDocuments
+            .filter(doc => !doc.isUntitled)
+            .map(doc => doc.uri)
+            .slice(0, 10);
+        files = recentFiles;
     }
-    return [];
-  }
+    
+    // Read file contents with size limits
+    const fileContents = [];
+    for (const file of files) {
+        try {
+            const stat = await vscode.workspace.fs.stat(file);
+            
+            // Skip files larger than 100KB to avoid performance issues
+            if (stat.size > 100000) {
+                vscode.window.showWarningMessage(`Skipping large file: ${vscode.workspace.asRelativePath(file)}`);
+                continue;
+            }
+            
+            const content = await vscode.workspace.fs.readFile(file);
+            const text = Buffer.from(content).toString('utf8');
+            
+            fileContents.push({
+                name: vscode.workspace.asRelativePath(file),
+                path: file.fsPath,
+                content: text,
+                size: stat.size
+            });
+        } catch (error) {
+            console.error(`Error reading file ${file.fsPath}:`, error);
+        }
+    }
+    
+    return fileContents;
+}
 
   private async getClipboardContext(): Promise<string> {
     const clipboardContent = await vscode.env.clipboard.readText();
@@ -313,110 +589,258 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   }
 
   private async getInstructionsContext(): Promise<string> {
-    const instructions = await vscode.window.showInputBox({
-      prompt: 'Enter custom instructions for the AI',
-      placeHolder: 'e.g., Use TypeScript, follow our coding standards...'
+    // Multi-step instructions input
+    const instructionType = await vscode.window.showQuickPick([
+        '📝 Custom instructions',
+        '🎯 Project guidelines',
+        '🔧 Code style preferences',
+        '📚 Domain knowledge',
+        '🚀 Performance requirements'
+    ], {
+        placeHolder: 'What type of instructions would you like to add?'
     });
     
-    return instructions || '';
-  }
-
-  private async captureScreenshot(): Promise<string> {
-    vscode.window.showInformationMessage('Screenshot capture integration coming soon');
+    if (!instructionType) return '';
+    
+    let promptText = 'Enter your instructions:';
+    let placeholder = 'Type your instructions here...';
+    
+    if (instructionType.includes('Project guidelines')) {
+        promptText = 'Enter project-specific guidelines:';
+        placeholder = 'e.g., Use functional components, follow SOLID principles...';
+    } else if (instructionType.includes('Code style')) {
+        promptText = 'Enter code style preferences:';
+        placeholder = 'e.g., Use 2 spaces for indentation, prefer const over let...';
+    } else if (instructionType.includes('Domain knowledge')) {
+        promptText = 'Enter domain-specific knowledge:';
+        placeholder = 'e.g., This is a financial app, use BigDecimal for money calculations...';
+    } else if (instructionType.includes('Performance')) {
+        promptText = 'Enter performance requirements:';
+        placeholder = 'e.g., Must handle 1000 requests/sec, optimize for mobile devices...';
+    }
+    
+    const instructions = await vscode.window.showInputBox({
+        prompt: promptText,
+        placeHolder: placeholder,
+        ignoreFocusOut: true
+    });
+    
+    if (instructions) {
+        // Prepend the type for context
+        return `[${instructionType}]\n${instructions}`;
+    }
+    
     return '';
-  }
+}
+
+  private async getCodeSnippet(uri: vscode.Uri, range: vscode.Range): Promise<string> {
+    try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        return document.getText(range);
+    } catch {
+        return '';
+    }
+}
+
+  private async captureScreenshot(method?: string): Promise<string> {
+    // This is a placeholder - actual screenshot functionality would require
+    // additional implementation or an extension API
+    
+    if (method === 'Paste from Clipboard') {
+        // Try to get image data from clipboard (if available)
+        const clipboardData = await vscode.env.clipboard.readText();
+        if (clipboardData.startsWith('data:image')) {
+            return clipboardData;
+        }
+    }
+    
+    // For other methods, we'd need to implement actual screenshot capture
+    // This could involve:
+    // 1. Using a native module
+    // 2. Calling an external tool
+    // 3. Using the VS Code proposed API (when available)
+    
+    vscode.window.showInformationMessage(
+        'Screenshot capture requires additional setup. ' +
+        'You can paste an image URL or base64 data instead.'
+    );
+    
+    const imageData = await vscode.window.showInputBox({
+        prompt: 'Paste image URL or base64 data',
+        placeHolder: 'https://... or data:image/png;base64,...'
+    });
+    
+    return imageData || '';
+}
 
   private async getProblemsContext(): Promise<any[]> {
     const diagnostics = vscode.languages.getDiagnostics();
     const problems: any[] = [];
     
-    diagnostics.forEach(([uri, diags]) => {
-      diags.forEach(diag => {
-        problems.push({
-          file: uri.fsPath,
-          line: diag.range.start.line,
-          message: diag.message,
-          severity: diag.severity
-        });
-      });
+    // Process diagnostics with enhanced information
+    for (const [uri, diags] of diagnostics) {
+        if (diags.length > 0) {
+            const relativePath = vscode.workspace.asRelativePath(uri);
+            
+            for (const diag of diags) {
+                problems.push({
+                    file: relativePath,
+                    line: diag.range.start.line + 1,
+                    column: diag.range.start.character + 1,
+                    severity: diag.severity === vscode.DiagnosticSeverity.Error ? 'error' : 
+                             diag.severity === vscode.DiagnosticSeverity.Warning ? 'warning' : 'info',
+                    message: diag.message,
+                    source: diag.source || 'unknown',
+                    code: diag.code || '',
+                    // Include the problematic code snippet
+                    snippet: await this.getCodeSnippet(uri, diag.range)
+                });
+            }
+        }
+    }
+    
+    // Sort by severity (errors first) and then by file
+    problems.sort((a, b) => {
+        if (a.severity !== b.severity) {
+            return a.severity === 'error' ? -1 : 1;
+        }
+        return a.file.localeCompare(b.file);
     });
     
     return problems;
-  }
+}
 
   private async getSymbolsContext(): Promise<any[]> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return [];
     
+    // Get document symbols with enhanced information
     const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
-      'vscode.executeDocumentSymbolProvider',
-      editor.document.uri
+        'vscode.executeDocumentSymbolProvider',
+        editor.document.uri
     );
     
-    if (symbols) {
-      return symbols.map(s => ({
-        name: s.name,
-        kind: s.kind,
-        range: s.range
-      }));
+    if (!symbols) return [];
+    
+    // Flatten and enhance symbol information
+    const flattenSymbols = (
+        syms: vscode.DocumentSymbol[], 
+        parent?: string
+    ): any[] => {
+        const result: any[] = [];
+        
+        for (const sym of syms) {
+            const symbolInfo = {
+                name: sym.name,
+                kind: vscode.SymbolKind[sym.kind],
+                parent: parent,
+                range: {
+                    start: { line: sym.range.start.line + 1, character: sym.range.start.character + 1 },
+                    end: { line: sym.range.end.line + 1, character: sym.range.end.character + 1 }
+                },
+                detail: sym.detail || '',
+                // Get the actual code for the symbol
+                code: editor.document.getText(sym.range).substring(0, 200)
+            };
+            
+            result.push(symbolInfo);
+            
+            // Recursively process children
+            if (sym.children && sym.children.length > 0) {
+                result.push(...flattenSymbols(sym.children, sym.name));
+            }
+        }
+        
+        return result;
+    };
+    
+    return flattenSymbols(symbols);
+}
+
+  private async configureTools(): Promise<Map<string, Tool>> {
+    // Show tool configuration dialog
+    const tools = Array.from(this._availableTools.values());
+    
+    const quickPickItems = tools.map(tool => ({
+        label: tool.name,
+        description: tool.description,
+        picked: tool.enabled,
+        detail: `Category: ${tool.category}`
+    }));
+    
+    const selected = await vscode.window.showQuickPick(quickPickItems, {
+        canPickMany: true,
+        placeHolder: 'Select tools to enable'
+    });
+    
+    if (selected) {
+        // Update tool states
+        tools.forEach(tool => {
+            tool.enabled = selected.some(s => s.label === tool.name);
+        });
+        
+        // Save configuration
+        await this._context.globalState.update('enabledTools', 
+            tools.filter(t => t.enabled).map(t => t.id)
+        );
+        
+        vscode.window.showInformationMessage(
+            `Enabled ${selected.length} tools`
+        );
     }
     
-    return [];
-  }
-
-  private async configureTools(): Promise<void> {
-    vscode.window.showInformationMessage('Tools configuration panel will be shown in the webview');
-  }
+    return this._availableTools;
+}
 
   // Initialize available tools
   private initializeTools() {
     // Built-in tools
-    this._availableTools.set('changes', {
-      id: 'changes',
-      name: 'Get Changes',
-      description: 'Get diffs of changed files',
+    this._availableTools.set("changes", {
+      id: "changes",
+      name: "Get Changes",
+      description: "Get diffs of changed files",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
-    
-    this._availableTools.set('edit', {
-      id: 'edit',
-      name: 'Edit Files',
-      description: 'Edit files in your workspace',
+
+    this._availableTools.set("edit", {
+      id: "edit",
+      name: "Edit Files",
+      description: "Edit files in your workspace",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
-    
-    this._availableTools.set('search', {
-      id: 'search',
-      name: 'Search',
-      description: 'Search and read files in your workspace',
+
+    this._availableTools.set("search", {
+      id: "search",
+      name: "Search",
+      description: "Search and read files in your workspace",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
-    
-    this._availableTools.set('extensions', {
-      id: 'extensions',
-      name: 'Extensions',
-      description: 'Search for VS Code extensions',
+
+    this._availableTools.set("extensions", {
+      id: "extensions",
+      name: "Extensions",
+      description: "Search for VS Code extensions",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
-    
-    this._availableTools.set('fetch', {
-      id: 'fetch',
-      name: 'Fetch',
-      description: 'Fetch content from a web page',
+
+    this._availableTools.set("fetch", {
+      id: "fetch",
+      name: "Fetch",
+      description: "Fetch content from a web page",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
-    
-    this._availableTools.set('githubRepo', {
-      id: 'githubRepo',
-      name: 'GitHub Repo',
-      description: 'Search GitHub repositories',
+
+    this._availableTools.set("githubRepo", {
+      id: "githubRepo",
+      name: "GitHub Repo",
+      description: "Search GitHub repositories",
       enabled: true,
-      category: 'builtin'
+      category: "builtin",
     });
   }
 
@@ -428,23 +852,25 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
   ): Promise<{ response: string; references: any[] }> {
     const editor = vscode.window.activeTextEditor;
     let references: any[] = [];
-    let contextString = '';
-    
+    let contextString = "";
+
     // Build context from active context items
     if (contextItems && contextItems.length > 0) {
       for (const item of contextItems) {
         switch (item.type) {
-          case 'openEditors':
+          case "openEditors":
             const editors = await this.getOpenEditorsContext();
-            contextString += `\nOpen Files: ${editors.join(', ')}`;
+            contextString += `\nOpen Files: ${editors.join(", ")}`;
             break;
-          case 'problems':
+          case "problems":
             const problems = await this.getProblemsContext();
             contextString += `\nProblems: ${JSON.stringify(problems)}`;
             break;
-          case 'symbols':
+          case "symbols":
             const symbols = await this.getSymbolsContext();
-            contextString += `\nSymbols: ${symbols.map(s => s.name).join(', ')}`;
+            contextString += `\nSymbols: ${symbols
+              .map((s) => s.name)
+              .join(", ")}`;
             break;
           default:
             if (item.content) {
@@ -453,7 +879,7 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
         }
       }
     }
-    
+
     // Extract current editor context
     let extractedContext: ExtractedContext | undefined;
     if (editor) {
@@ -461,25 +887,26 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
         editor.document,
         editor.selection.active
       );
-      
+
       contextString += this.buildContextString(extractedContext);
     }
-    
+
     // Add mentions context
-    if (mentions.includes('@workspace')) {
+    if (mentions.includes("@workspace")) {
       const workspaceContext = await this._codeIndexer.getContext();
       contextString += `\nWorkspace: ${workspaceContext}`;
     }
-    
+
     // Build enhanced prompt with agent mode
-    const prompt = this.buildEnhancedPrompt(query, contextString, this._agentMode);
-    
-    // Get response from model service
-    const response = await this._modelService.chat(
-      prompt,
-      contextString
+    const prompt = this.buildEnhancedPrompt(
+      query,
+      contextString,
+      this._agentMode
     );
-    
+
+    // Get response from model service
+    const response = await this._modelService.chat(prompt, contextString);
+
     // Extract references from response if needed
     if (extractedContext) {
       const referenceRange: vscode.Range | undefined =
@@ -489,19 +916,23 @@ export class CopilotStyleChatProvider implements vscode.WebviewViewProvider {
       const fallbackLine = editor?.selection?.active.line ?? 0;
 
       references.push({
-        file: editor?.document.fileName || 'current',
+        file: editor?.document.fileName || "current",
         lines: referenceRange
           ? `${referenceRange.start.line + 1}-${referenceRange.end.line + 1}`
           : `${fallbackLine + 1}-${fallbackLine + 1}`,
-        content: extractedContext.prefix
+        content: extractedContext.prefix,
       });
     }
-    
+
     return { response, references };
   }
 
   // Build enhanced prompt with agent mode
-  private buildEnhancedPrompt(query: string, context: string, agentMode: boolean): string {
+  private buildEnhancedPrompt(
+    query: string,
+    context: string,
+    agentMode: boolean
+  ): string {
     if (agentMode) {
       return `You are an AI agent helping with code development. 
 You have access to various tools and can execute commands.
@@ -524,14 +955,14 @@ Query: ${query}`;
   // Model and mode management
   private async switchModel(model: string) {
     this._selectedModel = model;
-    
+
     // Update model service if needed
-    if (model === 'Local Model') {
-      await this._modelService.switchProvider('local');
+    if (model === "Local Model") {
+      await this._modelService.switchProvider("local");
     } else {
-      await this._modelService.switchProvider('openai');
+      await this._modelService.switchProvider("openai");
     }
-    
+
     vscode.window.showInformationMessage(`Switched to ${model}`);
     this.saveChatHistory();
   }
@@ -539,51 +970,55 @@ Query: ${query}`;
   private async toggleAgentMode() {
     this._agentMode = !this._agentMode;
     vscode.window.showInformationMessage(
-      `Agent mode ${this._agentMode ? 'enabled' : 'disabled'}`
+      `Agent mode ${this._agentMode ? "enabled" : "disabled"}`
     );
   }
 
   // Show chat history
   private async showChatHistory() {
     const quickPick = vscode.window.createQuickPick();
-    quickPick.title = 'Chat History';
-    quickPick.placeholder = 'Select a previous conversation to restore';
-    
-    const history = this._context.globalState.get<any[]>('copilotChatHistory') || [];
-    
-    quickPick.items = history.slice(-20).map(msg => ({
-      label: msg.content.substring(0, 50) + '...',
+    quickPick.title = "Chat History";
+    quickPick.placeholder = "Select a previous conversation to restore";
+
+    const history =
+      this._context.globalState.get<any[]>("copilotChatHistory") || [];
+
+    quickPick.items = history.slice(-20).map((msg) => ({
+      label: msg.content.substring(0, 50) + "...",
       description: new Date(msg.timestamp).toLocaleString(),
-      detail: msg.role
+      detail: msg.role,
     }));
-    
+
     quickPick.onDidAccept(() => {
       const selected = quickPick.selectedItems[0];
       if (selected) {
-        vscode.window.showInformationMessage('Restored conversation');
+        vscode.window.showInformationMessage("Restored conversation");
       }
       quickPick.dispose();
     });
-    
+
     quickPick.show();
   }
 
   // Show settings
   private async showSettings() {
-    vscode.commands.executeCommand('workbench.action.openSettings', 'sidekick-pro');
+    vscode.commands.executeCommand(
+      "workbench.action.openSettings",
+      "sidekick-pro"
+    );
   }
 
   // Generate onboarding instructions
   private async generateOnboardingInstructions() {
     const workspace = vscode.workspace.workspaceFolders?.[0];
     if (!workspace) {
-      vscode.window.showErrorMessage('No workspace folder open');
+      vscode.window.showErrorMessage("No workspace folder open");
       return;
     }
-    
+
     const projectLang = await this.detectProjectLanguage();
     const framework = await this.detectFramework();
-    
+
     const instructions = `# Sidekick Pro Onboarding Instructions
 
 ## Project Structure
@@ -615,74 +1050,78 @@ Query: ${query}`;
 - **#symbol** - Reference specific symbol
 
 Start by selecting code and using /explain to understand the codebase!`;
-    
+
     // Send instructions as a message
     this._view?.webview.postMessage({
-      type: 'addMessage',
-      role: 'assistant',
-      content: instructions
+      type: "addMessage",
+      role: "assistant",
+      content: instructions,
     });
-    
+
     // Add to messages
     this._messages.push({
-      role: 'assistant',
+      role: "assistant",
       content: instructions,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
-    
+
     this.updateChat();
   }
 
   // Helper method to detect project language
   private async detectProjectLanguage(): Promise<string> {
     const workspace = vscode.workspace.workspaceFolders?.[0];
-    if (!workspace) return 'Unknown';
-    
-    const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 10);
-    
-    const extensions = files.map(f => f.path.split('.').pop());
+    if (!workspace) return "Unknown";
+
+    const files = await vscode.workspace.findFiles(
+      "**/*",
+      "**/node_modules/**",
+      10
+    );
+
+    const extensions = files.map((f) => f.path.split(".").pop());
     const langMap: Record<string, string> = {
-      'ts': 'TypeScript',
-      'js': 'JavaScript',
-      'py': 'Python',
-      'java': 'Java',
-      'cs': 'C#',
-      'go': 'Go',
-      'rs': 'Rust',
-      'cpp': 'C++'
+      ts: "TypeScript",
+      js: "JavaScript",
+      py: "Python",
+      java: "Java",
+      cs: "C#",
+      go: "Go",
+      rs: "Rust",
+      cpp: "C++",
     };
-    
+
     for (const [ext, lang] of Object.entries(langMap)) {
       if (extensions.includes(ext)) {
         return lang;
       }
     }
-    
-    return 'Unknown';
+
+    return "Unknown";
   }
 
   // Helper method to detect framework
   private async detectFramework(): Promise<string> {
     const workspace = vscode.workspace.workspaceFolders?.[0];
-    if (!workspace) return 'None';
-    
+    if (!workspace) return "None";
+
     const frameworkFiles: Record<string, string> = {
-      'package.json': 'Node.js',
-      'requirements.txt': 'Python',
-      'pom.xml': 'Maven',
-      'build.gradle': 'Gradle',
-      'Cargo.toml': 'Rust/Cargo',
-      'go.mod': 'Go Modules'
+      "package.json": "Node.js",
+      "requirements.txt": "Python",
+      "pom.xml": "Maven",
+      "build.gradle": "Gradle",
+      "Cargo.toml": "Rust/Cargo",
+      "go.mod": "Go Modules",
     };
-    
+
     for (const [file, framework] of Object.entries(frameworkFiles)) {
       const exists = await vscode.workspace.findFiles(file, null, 1);
       if (exists.length > 0) {
         return framework;
       }
     }
-    
-    return 'None detected';
+
+    return "None detected";
   }
 
   // Focus chat method for external calls
@@ -708,25 +1147,27 @@ Start by selecting code and using /explain to understand the codebase!`;
         editor.selection.active
       );
     }
-    
+
     console.log(
       `Handling command: ${command} with provider: ${this._modelService.getCurrentProvider()}`
     );
-    
+
     switch (command) {
       case "/explain":
         if (editor && extractedContext) {
           const explainPrompt = this._promptTemplates.explainPrompt(
-            editor.selection.isEmpty 
+            editor.selection.isEmpty
               ? extractedContext.prefix
               : editor.document.getText(editor.selection),
             extractedContext,
-            { style: 'concise' }
+            { style: "concise" }
           );
           response = await this._modelService.chat(explainPrompt, "");
           references.push({
             file: vscode.workspace.asRelativePath(editor.document.uri),
-            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            lines: `${editor.selection.start.line + 1}-${
+              editor.selection.end.line + 1
+            }`,
           });
         } else {
           response = "Please select code or open a file to explain.";
@@ -754,7 +1195,9 @@ Start by selecting code and using /explain to understand the codebase!`;
           response = await this._modelService.chat(refactorPrompt, "");
           references.push({
             file: vscode.workspace.asRelativePath(editor.document.uri),
-            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            lines: `${editor.selection.start.line + 1}-${
+              editor.selection.end.line + 1
+            }`,
           });
         }
         break;
@@ -763,7 +1206,9 @@ Start by selecting code and using /explain to understand the codebase!`;
       case "/tests":
         if (editor && extractedContext) {
           const codeForTests = editor.selection.isEmpty
-            ? this.getFunctionSource(extractedContext.currentFunction) ?? extractedContext.prefix ?? ""
+            ? this.getFunctionSource(extractedContext.currentFunction) ??
+              extractedContext.prefix ??
+              ""
             : editor.document.getText(editor.selection);
           const testPrompt = this._promptTemplates.testPrompt(
             codeForTests,
@@ -772,7 +1217,9 @@ Start by selecting code and using /explain to understand the codebase!`;
           response = await this._modelService.chat(testPrompt, "");
           references.push({
             file: vscode.workspace.asRelativePath(editor.document.uri),
-            lines: `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
+            lines: `${editor.selection.start.line + 1}-${
+              editor.selection.end.line + 1
+            }`,
           });
         }
         break;
@@ -818,11 +1265,11 @@ Start by selecting code and using /explain to understand the codebase!`;
         if (editor) {
           const fileName = vscode.workspace.asRelativePath(editor.document.uri);
           const fileContent = editor.document.getText();
-          
+
           const existing = this._currentContext.findIndex(
-            c => c.type === "file" && c.name === fileName
+            (c) => c.type === "file" && c.name === fileName
           );
-          
+
           if (existing === -1) {
             this._currentContext.push({
               type: "file",
@@ -850,11 +1297,16 @@ Start by selecting code and using /explain to understand the codebase!`;
   }
 
   private removeContext(index: number) {
-    if (index >= 0 && index < this._currentContext.length) {
-      this._currentContext.splice(index, 1);
-      this.updateContextBadges();
+    if (index >= 0 && index < this._activeContextItems.length) {
+        const removed = this._activeContextItems.splice(index, 1)[0];
+        
+        vscode.window.showInformationMessage(
+            `Removed ${this.getContextSummary(removed)} from context`
+        );
+        
+        this.updateActiveContextsDisplay();
     }
-  }
+}
   private updateContextBadges() {
     this._view?.webview.postMessage({
       type: "updateContext",
@@ -865,7 +1317,9 @@ Start by selecting code and using /explain to understand the codebase!`;
     });
   }
 
-  private getFunctionSource(currentFunction: ExtractedContext["currentFunction"]): string | undefined {
+  private getFunctionSource(
+    currentFunction: ExtractedContext["currentFunction"]
+  ): string | undefined {
     if (!currentFunction) {
       return undefined;
     }
@@ -874,24 +1328,28 @@ Start by selecting code and using /explain to understand the codebase!`;
       return currentFunction;
     }
 
-    const text = typeof (currentFunction as any).text === "string"
-      ? (currentFunction as any).text
-      : undefined;
+    const text =
+      typeof (currentFunction as any).text === "string"
+        ? (currentFunction as any).text
+        : undefined;
 
     if (text && text.trim().length > 0) {
       return text;
     }
 
-    const signature = typeof (currentFunction as any).signature === "string"
-      ? (currentFunction as any).signature
-      : undefined;
+    const signature =
+      typeof (currentFunction as any).signature === "string"
+        ? (currentFunction as any).signature
+        : undefined;
 
-    const body = typeof (currentFunction as any).body === "string"
-      ? (currentFunction as any).body
-      : undefined;
+    const body =
+      typeof (currentFunction as any).body === "string"
+        ? (currentFunction as any).body
+        : undefined;
 
     const parts = [signature, body].filter(
-      (part): part is string => typeof part === "string" && part.trim().length > 0
+      (part): part is string =>
+        typeof part === "string" && part.trim().length > 0
     );
 
     if (parts.length > 0) {
@@ -913,9 +1371,11 @@ Start by selecting code and using /explain to understand the codebase!`;
     let contextString = this._currentContext
       .map((ctx) => `[${ctx.name}]:\n${(ctx.content ?? "").substring(0, 1000)}`)
       .join("\n\n");
-    
+
     if (extractedContext) {
-      const functionSnippet = this.getFunctionSource(extractedContext.currentFunction);
+      const functionSnippet = this.getFunctionSource(
+        extractedContext.currentFunction
+      );
       const contextDetails = [
         functionSnippet
           ? `Function: ${functionSnippet.substring(0, 500)}`
@@ -928,15 +1388,17 @@ Start by selecting code and using /explain to understand the codebase!`;
           : null,
         `Language: ${extractedContext.language}`,
         extractedContext.localVariables.length
-          ? `Variables: ${extractedContext.localVariables.slice(0, 10).join(", ")}`
+          ? `Variables: ${extractedContext.localVariables
+              .slice(0, 10)
+              .join(", ")}`
           : null,
       ]
         .filter(Boolean)
         .join("\n");
-      
+
       contextString += `\n\nCode Context:\n${contextDetails}`;
     }
-    
+
     return contextString;
   }
 
@@ -1072,712 +1534,901 @@ Start by selecting code and using /explain to understand the codebase!`;
     return this.getEnhancedCopilotChatHtml();
   }
 
-  private getEnhancedCopilotChatHtml(): string {
-    // This is the complete enhanced HTML from the artifact
-    // Including all the GitHub Copilot-style UI elements
+  // Replace the getEnhancedCopilotChatHtml method in your CopilotStyleChatProvider class
+
+private getEnhancedCopilotChatHtml(): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-    /* [Include all the styles from the enhanced HTML artifact] */
-    :root {
-        --vscode-foreground: #cccccc;
-        --vscode-background: #1e1e1e;
-        --vscode-panel-background: #252526;
-        --vscode-input-background: #3c3c3c;
-        --vscode-input-foreground: #cccccc;
-        --vscode-button-background: #0e639c;
-        --vscode-button-foreground: #ffffff;
-        --vscode-button-hoverBackground: #1177bb;
-        --vscode-border: #464647;
-        --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
-        --vscode-list-hoverBackground: #2a2d2e;
-        --vscode-list-activeSelectionBackground: #094771;
-    }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            --vscode-foreground: #cccccc;
+            --vscode-background: #1e1e1e;
+            --vscode-panel-background: #252526;
+            --vscode-input-background: #3c3c3c;
+            --vscode-input-foreground: #cccccc;
+            --vscode-button-background: #0e639c;
+            --vscode-button-foreground: #ffffff;
+            --vscode-button-hoverBackground: #1177bb;
+            --vscode-border: #464647;
+            --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+            --vscode-list-hoverBackground: #2a2d2e;
+            --vscode-list-activeSelectionBackground: #094771;
+            --context-menu-background: #2d2d30;
+            --context-item-hover: #094771;
+        }
 
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-    body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: var(--vscode-background);
-        color: var(--vscode-foreground);
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-        font-size: 13px;
-    }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--vscode-background);
+            color: var(--vscode-foreground);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            font-size: 13px;
+            min-width: 350px;
+        }
 
-    .header {
-        display: flex;
-        align-items: center;
-        padding: 8px 12px;
-        background: var(--vscode-panel-background);
-        border-bottom: 1px solid var(--vscode-border);
-    }
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: var(--vscode-panel-background);
+            border-bottom: 1px solid var(--vscode-border);
+            min-height: 40px;
+        }
 
-    .header-title {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        opacity: 0.8;
-        margin-right: auto;
-    }
+        .header-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.8;
+        }
 
-    .header-actions {
-        display: flex;
-        gap: 2px;
-    }
+        .header-actions {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
 
-    .header-action {
-        background: transparent;
-        border: none;
-        color: var(--vscode-foreground);
-        cursor: pointer;
-        padding: 4px 6px;
-        border-radius: 4px;
-        opacity: 0.7;
-    }
+        .header-action {
+            background: transparent;
+            border: none;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.7;
+            transition: all 0.2s;
+            font-size: 16px;
+        }
 
-    .header-action:hover {
-        opacity: 1;
-        background: var(--vscode-list-hoverBackground);
-    }
+        .header-action:hover {
+            opacity: 1;
+            background: var(--vscode-list-hoverBackground);
+        }
 
-    .welcome-container {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        text-align: center;
-    }
+        /* Chat Container */
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
 
-    .welcome-icon {
-        font-size: 48px;
-        margin-bottom: 24px;
-        opacity: 0.8;
-    }
+        /* Messages Area */
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
 
-    .welcome-title {
-        font-size: 24px;
-        font-weight: 300;
-        margin-bottom: 12px;
-    }
+        .message {
+            display: flex;
+            gap: 12px;
+            animation: slideIn 0.3s ease;
+        }
 
-    .welcome-subtitle {
-        color: #999;
-        font-size: 14px;
-        margin-bottom: 24px;
-    }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
 
-    .welcome-link {
-        color: #0e639c;
-        text-decoration: none;
-        font-size: 14px;
-        cursor: pointer;
-    }
+        .message-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--vscode-button-background);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 12px;
+        }
 
-    .messages-container {
-        flex: 1;
-        overflow-y: auto;
-        padding: 16px;
-        display: none;
-    }
+        .message-content {
+            flex: 1;
+            line-height: 1.5;
+        }
 
-    .messages-container.has-messages {
-        display: block;
-    }
+        .message-header {
+            font-weight: 600;
+            margin-bottom: 4px;
+            opacity: 0.9;
+        }
 
-    .message {
-        margin-bottom: 24px;
-        animation: fadeIn 0.3s ease-in;
-    }
+        .message pre {
+            background: var(--vscode-panel-background);
+            border: 1px solid var(--vscode-border);
+            border-radius: 4px;
+            padding: 8px;
+            margin: 8px 0;
+            overflow-x: auto;
+        }
 
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
+        .message code {
+            background: var(--vscode-panel-background);
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+        }
 
-    .message-header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 8px;
-        font-weight: 600;
-    }
+        /* Context Pills */
+        .active-contexts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 8px 16px;
+            background: var(--vscode-panel-background);
+            border-top: 1px solid var(--vscode-border);
+            min-height: 40px;
+            align-items: center;
+        }
 
-    .message-content {
-        margin-left: 28px;
-        line-height: 1.6;
-    }
+        .context-pill {
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-border);
+            border-radius: 12px;
+            padding: 4px 10px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
 
-    .message-content pre {
-        background: var(--vscode-input-background);
-        border: 1px solid var(--vscode-border);
-        border-radius: 4px;
-        padding: 12px;
-        margin: 8px 0;
-        overflow-x: auto;
-    }
+        .context-pill:hover {
+            background: var(--vscode-list-hoverBackground);
+            border-color: var(--vscode-button-background);
+        }
 
-    .message-content code {
-        background: var(--vscode-input-background);
-        padding: 2px 4px;
-        border-radius: 3px;
-        font-family: "Consolas", "Monaco", monospace;
-        font-size: 12px;
-    }
+        .context-pill .remove {
+            opacity: 0.6;
+            cursor: pointer;
+        }
 
-    .input-section {
-        padding: 12px;
-        background: var(--vscode-panel-background);
-        border-top: 1px solid var(--vscode-border);
-    }
+        .context-pill .remove:hover {
+            opacity: 1;
+        }
 
-    .context-pills {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-bottom: 8px;
-        min-height: 28px;
-    }
+        /* Input Area */
+        .input-area {
+            padding: 12px;
+            background: var(--vscode-panel-background);
+            border-top: 1px solid var(--vscode-border);
+        }
 
-    .context-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        padding: 4px 8px;
-        background: var(--vscode-input-background);
-        border: 1px solid var(--vscode-border);
-        border-radius: 12px;
-        font-size: 12px;
-        animation: slideIn 0.2s ease-out;
-    }
+        /* Context Menu Button */
+        .context-menu-container {
+            position: relative;
+            margin-bottom: 8px;
+        }
 
-    @keyframes slideIn {
-        from { opacity: 0; transform: scale(0.9); }
-        to { opacity: 1; transform: scale(1); }
-    }
+        .add-context-btn {
+            width: 100%;
+            padding: 8px;
+            background: transparent;
+            border: 1px dashed var(--vscode-border);
+            border-radius: 4px;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.7;
+            transition: all 0.2s;
+        }
 
-    .input-wrapper {
-        position: relative;
-        display: flex;
-        align-items: flex-end;
-        gap: 8px;
-        background: var(--vscode-input-background);
-        border: 1px solid var(--vscode-border);
-        border-radius: 6px;
-        padding: 8px;
-    }
+        .add-context-btn:hover {
+            opacity: 1;
+            background: var(--vscode-list-hoverBackground);
+            border-style: solid;
+        }
 
-    .input-wrapper:focus-within {
-        border-color: var(--vscode-button-background);
-    }
+        /* Context Menu */
+        .context-menu {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            background: var(--context-menu-background);
+            border: 1px solid var(--vscode-border);
+            border-radius: 6px;
+            box-shadow: var(--vscode-widget-shadow) 0 2px 8px;
+            margin-bottom: 4px;
+            display: none;
+            z-index: 1000;
+            max-height: 400px;
+            overflow-y: auto;
+        }
 
-    .add-context-btn {
-        background: transparent;
-        border: none;
-        color: var(--vscode-foreground);
-        cursor: pointer;
-        padding: 4px 8px;
-        border-radius: 4px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 13px;
-        opacity: 0.7;
-        transition: all 0.2s;
-        white-space: nowrap;
-    }
+        .context-menu.show {
+            display: block;
+            animation: menuSlideUp 0.2s ease;
+        }
 
-    .add-context-btn:hover {
-        opacity: 1;
-        background: var(--vscode-list-hoverBackground);
-    }
+        @keyframes menuSlideUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
 
-    #chatInput {
-        flex: 1;
-        background: transparent;
-        border: none;
-        color: var(--vscode-foreground);
-        font-size: 13px;
-        font-family: inherit;
-        resize: none;
-        outline: none;
-        padding: 0;
-        min-height: 20px;
-        max-height: 120px;
-        line-height: 1.5;
-    }
+        .context-menu-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: background 0.15s;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
 
-    .context-menu {
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 0;
-        right: 0;
-        background: var(--vscode-panel-background);
-        border: 1px solid var(--vscode-border);
-        border-radius: 6px;
-        box-shadow: 0 4px 12px var(--vscode-widget-shadow);
-        display: none;
-        max-height: 300px;
-        overflow-y: auto;
-        z-index: 1000;
-    }
+        .context-menu-item:last-child {
+            border-bottom: none;
+        }
 
-    .context-menu.active {
-        display: block;
-    }
+        .context-menu-item:hover {
+            background: var(--context-item-hover);
+        }
 
-    .context-menu-item {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 12px;
-        cursor: pointer;
-        transition: background 0.2s;
-    }
+        .context-menu-icon {
+            font-size: 16px;
+            width: 24px;
+            text-align: center;
+            flex-shrink: 0;
+        }
 
-    .context-menu-item:hover {
-        background: var(--vscode-list-hoverBackground);
-    }
+        .context-menu-label {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
 
-    .model-selector {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        padding: 4px 8px;
-        background: var(--vscode-list-hoverBackground);
-        border: 1px solid var(--vscode-border);
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 12px;
-    }
+        .context-menu-title {
+            font-weight: 500;
+        }
 
-    .model-selector:hover {
-        background: var(--vscode-list-activeSelectionBackground);
-    }
+        .context-menu-desc {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 2px;
+        }
 
-    .send-button {
-        background: var(--vscode-button-background);
-        color: var(--vscode-button-foreground);
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 13px;
-        font-weight: 500;
-        transition: all 0.2s;
-    }
+        /* Input Controls */
+        .input-controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
 
-    .send-button:hover:not(:disabled) {
-        background: var(--vscode-button-hoverBackground);
-    }
+        .model-selector {
+            flex: 1;
+            display: flex;
+            gap: 4px;
+        }
 
-    .send-button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
+        .model-dropdown {
+            flex: 1;
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-border);
+            color: var(--vscode-input-foreground);
+            padding: 6px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+        }
 
-    .tools-modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.8);
-        display: none;
-        align-items: center;
-        justify-content: center;
-        z-index: 2000;
-    }
+        /* Message Input */
+        .message-input {
+            width: 100%;
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-border);
+            color: var(--vscode-input-foreground);
+            padding: 8px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 13px;
+            resize: vertical;
+            min-height: 60px;
+            max-height: 200px;
+        }
 
-    .tools-modal.active {
-        display: flex;
-    }
+        .message-input:focus {
+            outline: none;
+            border-color: var(--vscode-button-background);
+        }
 
-    .tools-modal-content {
-        background: var(--vscode-panel-background);
-        border: 1px solid var(--vscode-border);
-        border-radius: 8px;
-        width: 90%;
-        max-width: 600px;
-        max-height: 80vh;
-        display: flex;
-        flex-direction: column;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-    }
+        /* Send Button */
+        .send-btn {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
 
-    .typing-indicator {
-        display: none;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        margin-left: 28px;
-    }
+        .send-btn:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
 
-    .typing-indicator.active {
-        display: flex;
-    }
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
 
-    .typing-dot {
-        width: 4px;
-        height: 4px;
-        background: var(--vscode-foreground);
-        border-radius: 50%;
-        opacity: 0.3;
-        animation: typing 1.4s infinite;
-    }
+        /* Welcome Screen */
+        .welcome {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            text-align: center;
+        }
 
-    @keyframes typing {
-        0%, 60%, 100% { opacity: 0.3; }
-        30% { opacity: 1; }
-    }
-</style>
+        .welcome-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .welcome h2 {
+            font-size: 20px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .welcome p {
+            opacity: 0.7;
+            margin-bottom: 24px;
+        }
+
+        .welcome-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .welcome-btn {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .welcome-btn:hover {
+            background: var(--vscode-button-hoverBackground);
+            transform: translateY(-1px);
+        }
+
+        /* Typing Indicator */
+        .typing-indicator {
+            display: none;
+            padding: 8px 16px;
+            opacity: 0.6;
+        }
+
+        .typing-indicator.show {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--vscode-foreground);
+            border-radius: 50%;
+            animation: typing 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 60%, 100% {
+                opacity: 0.3;
+                transform: scale(0.8);
+            }
+            30% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        /* Code Actions */
+        .code-actions {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
+        }
+
+        .code-action {
+            background: transparent;
+            border: 1px solid var(--vscode-border);
+            color: var(--vscode-foreground);
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0.7;
+            transition: all 0.2s;
+        }
+
+        .code-action:hover {
+            opacity: 1;
+            background: var(--vscode-list-hoverBackground);
+        }
+    </style>
 </head>
 <body>
-    <!-- [Include all the HTML structure from the enhanced artifact] -->
     <!-- Header -->
     <div class="header">
-        <span class="header-title">SIDEKICK PRO CHAT: CHAT</span>
+        <span class="header-title">SIDEKICK PRO CHAT</span>
         <div class="header-actions">
-            <button class="header-action" title="New Chat" onclick="clearChat()">➕</button>
-            <button class="header-action" title="History" onclick="showHistory()">🕐</button>
-            <button class="header-action" title="Settings" onclick="showSettings()">⚙️</button>
-            <button class="header-action" title="More Actions">⋯</button>
+            <button class="header-action" id="newChatBtn" title="New Chat">➕</button>
+            <button class="header-action" id="historyBtn" title="History">🕐</button>
+            <button class="header-action" id="settingsBtn" title="Settings">⚙️</button>
+            <button class="header-action" id="moreBtn" title="More">⋯</button>
         </div>
     </div>
 
-    <!-- Welcome Container -->
-    <div class="welcome-container" id="welcomeContainer">
-        <div class="welcome-icon">✨</div>
-        <h2 class="welcome-title">Build with agent mode.</h2>
-        <p class="welcome-subtitle">AI responses may be inaccurate.</p>
-        <a href="#" class="welcome-link" onclick="generateInstructions()">Generate instructions to onboard AI onto your codebase.</a>
+    <!-- Chat Container -->
+    <div class="chat-container">
+        <!-- Welcome Screen (shown when no messages) -->
+        <div class="welcome" id="welcomeScreen">
+            <div class="welcome-icon">✨</div>
+            <h2>Sidekick Pro Chat</h2>
+            <p>Your AI-powered coding assistant</p>
+            <div class="welcome-actions">
+                <button class="welcome-btn" onclick="quickAction('explain')">💡 Explain Code</button>
+                <button class="welcome-btn" onclick="quickAction('fix')">🔧 Fix Issues</button>
+                <button class="welcome-btn" onclick="quickAction('refactor')">🔄 Refactor</button>
+                <button class="welcome-btn" onclick="quickAction('test')">🧪 Write Tests</button>
+            </div>
+        </div>
+
+        <!-- Messages Area -->
+        <div class="messages" id="messagesContainer" style="display: none;"></div>
+        
+        <!-- Typing Indicator -->
+        <div class="typing-indicator" id="typingIndicator">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
     </div>
 
-    <!-- Messages Container -->
-    <div class="messages-container" id="messagesContainer"></div>
+    <!-- Active Contexts Display -->
+    <div class="active-contexts" id="activeContexts"></div>
 
-    <!-- Input Section -->
-    <div class="input-section">
-        <div class="context-pills" id="contextPills"></div>
-        
-        <div class="input-wrapper">
-            <button class="add-context-btn" onclick="toggleContextMenu()">
+    <!-- Input Area -->
+    <div class="input-area">
+        <!-- Context Menu -->
+        <div class="context-menu-container">
+            <button class="add-context-btn" id="addContextBtn">
                 <span>📎</span>
                 <span>Add Context...</span>
             </button>
             
-            <textarea id="chatInput" placeholder="Ask about your code or type / for commands..." rows="1"></textarea>
-            
-            <!-- Context Menu -->
             <div class="context-menu" id="contextMenu">
-                <div class="context-menu-item" onclick="selectContext('openEditors')">
-                    <span>📄</span>
-                    <span>Open Editors</span>
+                <div class="context-menu-item" data-context="openEditors">
+                    <span class="context-menu-icon">📝</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Open Editors</span>
+                        <span class="context-menu-desc">Include all open files</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('files')">
-                    <span>📁</span>
-                    <span>Files & Folders...</span>
+                <div class="context-menu-item" data-context="files">
+                    <span class="context-menu-icon">📁</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Files & Folders</span>
+                        <span class="context-menu-desc">Select specific files or folders</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('clipboard')">
-                    <span>📋</span>
-                    <span>Image from Clipboard</span>
+                <div class="context-menu-item" data-context="clipboard">
+                    <span class="context-menu-icon">📋</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Image from Clipboard</span>
+                        <span class="context-menu-desc">Paste image from clipboard</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('instructions')">
-                    <span>📝</span>
-                    <span>Instructions...</span>
+                <div class="context-menu-item" data-context="instructions">
+                    <span class="context-menu-icon">📝</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Instructions</span>
+                        <span class="context-menu-desc">Add custom instructions</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('screenshot')">
-                    <span>📷</span>
-                    <span>Screenshot Window</span>
+                <div class="context-menu-item" data-context="screenshot">
+                    <span class="context-menu-icon">📸</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Screenshot Window</span>
+                        <span class="context-menu-desc">Capture a screenshot</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('problems')">
-                    <span>❌</span>
-                    <span>Problems...</span>
+                <div class="context-menu-item" data-context="problems">
+                    <span class="context-menu-icon">❌</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Problems</span>
+                        <span class="context-menu-desc">Include errors and warnings</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('symbols')">
-                    <span>📦</span>
-                    <span>Symbols...</span>
+                <div class="context-menu-item" data-context="symbols">
+                    <span class="context-menu-icon">🔤</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Symbols</span>
+                        <span class="context-menu-desc">Include document symbols</span>
+                    </div>
                 </div>
-                <div class="context-menu-item" onclick="selectContext('tools')">
-                    <span>🔧</span>
-                    <span>Tools...</span>
+                <div class="context-menu-item" data-context="tools">
+                    <span class="context-menu-icon">🔧</span>
+                    <div class="context-menu-label">
+                        <span class="context-menu-title">Tools</span>
+                        <span class="context-menu-desc">Configure available tools</span>
+                    </div>
                 </div>
             </div>
         </div>
-        
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <div class="model-selector" onclick="switchModel()">
-                    <span>Agent</span>
-                    <span>▼</span>
-                </div>
-                <div class="model-selector" onclick="selectModel()">
-                    <span id="currentModel">GPT-4o mini</span>
-                    <span>▼</span>
-                </div>
-                <button class="add-context-btn" onclick="showTools()" style="padding: 4px;">
-                    ⚙️
-                </button>
+
+        <!-- Input Controls -->
+        <div class="input-controls">
+            <div class="model-selector">
+                <select class="model-dropdown" id="agentDropdown">
+                    <option value="agent">Agent ▼</option>
+                    <option value="chat">Chat</option>
+                </select>
+                <select class="model-dropdown" id="modelDropdown">
+                    <option value="gpt-4o-mini">GPT-4o mini ▼</option>
+                    <option value="gpt-4">GPT-4</option>
+                    <option value="local">Local Model</option>
+                </select>
             </div>
-            <div class="input-actions">
-                <button class="send-button" id="sendButton" onclick="sendMessage()">
-                    Send ▶
-                </button>
-            </div>
+            <button class="send-btn" id="sendBtn">Send ➤</button>
         </div>
-        
-        <div class="input-hint" style="font-size: 11px; color: #999; margin-top: 4px;">
-            Press Enter to send, Shift+Enter for new line
-        </div>
+
+        <!-- Message Input -->
+        <textarea 
+            class="message-input" 
+            id="messageInput" 
+            placeholder="Ask about your code or type / for commands..."
+            rows="3"
+        ></textarea>
     </div>
 
-    <!-- Typing Indicator -->
-    <div class="typing-indicator" id="typingIndicator">
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-    </div>
+    <script>
+        const vscode = acquireVsCodeApi();
+        let currentContexts = [];
 
-    <!-- Tools Configuration Modal -->
-    <div class="tools-modal" id="toolsModal">
-        <div class="tools-modal-content">
-            <!-- [Include tools modal content] -->
-        </div>
-    </div>
-
-<script>
-    const vscode = acquireVsCodeApi();
-    let messages = [];
-    let contextItems = [];
-    let selectedTools = new Set();
-
-    // [Include all JavaScript from enhanced artifact]
-    document.addEventListener('DOMContentLoaded', function() {
-        const chatInput = document.getElementById('chatInput');
-        
-        // Auto-resize textarea
-        chatInput.addEventListener('input', function() {
-            this.style.height = 'auto';
-            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-            updateSendButton();
+        // Add Context Menu Toggle
+        document.getElementById('addContextBtn').addEventListener('click', () => {
+            const menu = document.getElementById('contextMenu');
+            menu.classList.toggle('show');
         });
 
-        // Handle Enter key
-        chatInput.addEventListener('keydown', function(e) {
+        // Handle context menu item clicks
+        document.querySelectorAll('.context-menu-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const contextType = item.dataset.context;
+                vscode.postMessage({ 
+                    type: 'selectContext', 
+                    contextType: contextType 
+                });
+                document.getElementById('contextMenu').classList.remove('show');
+            });
+        });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('contextMenu');
+            const btn = document.getElementById('addContextBtn');
+            if (!menu.contains(e.target) && !btn.contains(e.target)) {
+                menu.classList.remove('show');
+            }
+        });
+
+        // Handle message sending
+        document.getElementById('sendBtn').addEventListener('click', sendMessage);
+        document.getElementById('messageInput').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
         });
-    });
 
-    function toggleContextMenu() {
-        const menu = document.getElementById('contextMenu');
-        menu.classList.toggle('active');
-    }
-
-    function selectContext(type) {
-        vscode.postMessage({
-            type: 'selectContext',
-            contextType: type
-        });
-        addContextPill(type);
-        document.getElementById('contextMenu').classList.remove('active');
-    }
-
-    function addContextPill(type) {
-        const pillsContainer = document.getElementById('contextPills');
-        const pillId = 'context-' + Date.now();
-        
-        const typeInfo = {
-            'openEditors': { icon: '📄', label: 'Open Editors' },
-            'files': { icon: '📁', label: 'Selected Files' },
-            'clipboard': { icon: '📋', label: 'Clipboard' },
-            'instructions': { icon: '📝', label: 'Instructions' },
-            'screenshot': { icon: '📷', label: 'Screenshot' },
-            'problems': { icon: '❌', label: 'Problems' },
-            'symbols': { icon: '📦', label: 'Symbols' },
-            'tools': { icon: '🔧', label: 'Tools' }
-        };
-
-        const info = typeInfo[type] || { icon: '📎', label: type };
-        
-        const pill = document.createElement('div');
-        pill.className = 'context-pill';
-        pill.id = pillId;
-        pill.innerHTML = \`
-            <span>\${info.icon}</span>
-            <span>\${info.label}</span>
-            <span style="cursor: pointer; opacity: 0.5;" onclick="removeContextPill('\${pillId}')">✕</span>
-        \`;
-        
-        pillsContainer.appendChild(pill);
-        contextItems.push({ id: pillId, type: type });
-    }
-
-    function removeContextPill(pillId) {
-        const pill = document.getElementById(pillId);
-        if (pill) {
-            pill.remove();
-            contextItems = contextItems.filter(item => item.id !== pillId);
-        }
-    }
-
-    function showTools() {
-        vscode.postMessage({ type: 'showTools' });
-    }
-
-    function switchModel() {
-        vscode.postMessage({ type: 'switchAgent' });
-    }
-
-    function selectModel() {
-        const models = ['GPT-4o mini', 'GPT-4', 'Claude 3.5', 'Local Model'];
-        const currentModel = document.getElementById('currentModel').textContent;
-        const nextIndex = (models.indexOf(currentModel) + 1) % models.length;
-        document.getElementById('currentModel').textContent = models[nextIndex];
-        
-        vscode.postMessage({ 
-            type: 'switchModel',
-            model: models[nextIndex]
-        });
-    }
-
-    function sendMessage() {
-        const input = document.getElementById('chatInput');
-        const message = input.value.trim();
-        
-        if (!message) return;
-        
-        document.getElementById('welcomeContainer').style.display = 'none';
-        document.getElementById('messagesContainer').classList.add('has-messages');
-        
-        input.value = '';
-        input.style.height = 'auto';
-        updateSendButton();
-        
-        vscode.postMessage({
-            type: 'message',
-            text: message,
-            context: contextItems
-        });
-        
-        document.getElementById('contextPills').innerHTML = '';
-        contextItems = [];
-    }
-
-    function updateSendButton() {
-        const input = document.getElementById('chatInput');
-        const sendButton = document.getElementById('sendButton');
-        sendButton.disabled = !input.value.trim();
-    }
-
-    function clearChat() {
-        vscode.postMessage({ type: 'clear' });
-    }
-
-    function showHistory() {
-        vscode.postMessage({ type: 'showHistory' });
-    }
-
-    function showSettings() {
-        vscode.postMessage({ type: 'showSettings' });
-    }
-
-    function generateInstructions() {
-        vscode.postMessage({ type: 'generateInstructions' });
-    }
-
-    // Listen for messages from extension
-    window.addEventListener('message', event => {
-        const message = event.data;
-        switch (message.type) {
-            case 'updateMessages':
-                updateMessages(message.messages);
-                break;
-            case 'showTyping':
-                document.getElementById('typingIndicator').classList.add('active');
-                break;
-            case 'hideTyping':
-                document.getElementById('typingIndicator').classList.remove('active');
-                break;
-            case 'contextAdded':
-                addContextPill(message.contextType);
-                break;
-        }
-    });
-
-    function updateMessages(msgs) {
-        messages = msgs;
-        const container = document.getElementById('messagesContainer');
-        
-        if (!messages || messages.length === 0) {
-            container.innerHTML = '';
-            container.classList.remove('has-messages');
-            document.getElementById('welcomeContainer').style.display = 'flex';
-            return;
-        }
-        
-        document.getElementById('welcomeContainer').style.display = 'none';
-        container.classList.add('has-messages');
-        container.innerHTML = '';
-        
-        messages.forEach(msg => {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message ' + msg.role;
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
             
-            const icon = msg.role === 'user' ? '👤' : '🤖';
-            const roleName = msg.role === 'user' ? 'You' : 'Sidekick Pro';
+            if (!message) return;
             
-            messageDiv.innerHTML = \`
-                <div class="message-header">
-                    <span>\${icon}</span>
-                    <span>\${roleName}</span>
-                </div>
-                <div class="message-content">\${formatContent(msg.content)}</div>
-            \`;
+            vscode.postMessage({ 
+                type: 'sendMessage', 
+                message: message,
+                contexts: currentContexts
+            });
             
-            if (msg.references && msg.references.length > 0) {
-                const refsDiv = document.createElement('div');
-                refsDiv.style.marginLeft = '28px';
-                refsDiv.style.marginTop = '8px';
-                msg.references.forEach(ref => {
-                    refsDiv.innerHTML += \`<span style="background: var(--vscode-input-background); padding: 2px 6px; border-radius: 4px; margin-right: 4px; font-size: 12px;">📄 \${ref.file}</span>\`;
-                });
-                messageDiv.appendChild(refsDiv);
+            input.value = '';
+            
+            // Show messages container and hide welcome
+            document.getElementById('welcomeScreen').style.display = 'none';
+            document.getElementById('messagesContainer').style.display = 'block';
+        }
+
+        // Handle model/agent selection
+        document.getElementById('modelDropdown').addEventListener('change', (e) => {
+            vscode.postMessage({ 
+                type: 'switchModel', 
+                model: e.target.value 
+            });
+        });
+
+        document.getElementById('agentDropdown').addEventListener('change', (e) => {
+            vscode.postMessage({ 
+                type: 'switchAgent', 
+                mode: e.target.value 
+            });
+        });
+
+        // Header actions
+        document.getElementById('newChatBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'clear' });
+        });
+
+        document.getElementById('historyBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'showHistory' });
+        });
+
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'showSettings' });
+        });
+
+        // Quick actions
+        function quickAction(action) {
+            const commands = {
+                'explain': '/explain',
+                'fix': '/fix',
+                'refactor': '/refactor',
+                'test': '/test'
+            };
+            
+            document.getElementById('messageInput').value = commands[action] + ' ';
+            document.getElementById('messageInput').focus();
+        }
+
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.type) {
+                case 'updateMessages':
+                    updateMessages(message.messages);
+                    break;
+                case 'showTyping':
+                    document.getElementById('typingIndicator').classList.add('show');
+                    break;
+                case 'hideTyping':
+                    document.getElementById('typingIndicator').classList.remove('show');
+                    break;
+                case 'contextAdded':
+                    addContextPill(message);
+                    break;
+                case 'updateActiveContexts':
+                    updateActiveContexts(message.contexts);
+                    break;
+            }
+        });
+
+        function updateMessages(messages) {
+            const container = document.getElementById('messagesContainer');
+            
+            if (!messages || messages.length === 0) {
+                document.getElementById('welcomeScreen').style.display = 'flex';
+                container.style.display = 'none';
+                return;
             }
             
-            container.appendChild(messageDiv);
-        });
-        
-        container.scrollTop = container.scrollHeight;
-    }
+            document.getElementById('welcomeScreen').style.display = 'none';
+            container.style.display = 'block';
+            
+            container.innerHTML = '';
+            
+            messages.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message';
+                
+                const icon = document.createElement('div');
+                icon.className = 'message-icon';
+                icon.textContent = msg.role === 'user' ? '👤' : '🤖';
+                
+                const content = document.createElement('div');
+                content.className = 'message-content';
+                
+                const header = document.createElement('div');
+                header.className = 'message-header';
+                header.textContent = msg.role === 'user' ? 'You' : 'Sidekick Pro';
+                
+                const text = document.createElement('div');
+                text.innerHTML = formatMessage(msg.content);
+                
+                content.appendChild(header);
+                content.appendChild(text);
+                
+                // Add code actions if there's code
+                if (msg.content.includes('\`\`\`')) {
+                    const actions = document.createElement('div');
+                    actions.className = 'code-actions';
+                    actions.innerHTML = \`
+                        <button class="code-action" onclick="copyCode()">📋 Copy</button>
+                        <button class="code-action" onclick="insertCode()">📝 Insert</button>
+                        <button class="code-action" onclick="applyCode()">✅ Apply</button>
+                    \`;
+                    content.appendChild(actions);
+                }
+                
+                messageDiv.appendChild(icon);
+                messageDiv.appendChild(content);
+                container.appendChild(messageDiv);
+            });
+            
+            container.scrollTop = container.scrollHeight;
+        }
 
-    function formatContent(content) {
-        return content
-            .replace(/\`\`\`([\\w]*)\\n([\\s\\S]*?)\`\`\`/g, '<pre><code>$2</code></pre>')
-            .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-            .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
-            .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
-            .replace(/\\n/g, '<br>');
-    }
-</script>
+        function formatMessage(content) {
+            return content
+                .replace(/\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, (match, lang, code) => {
+                    return \`<pre><code class="\${lang}">\${escapeHtml(code)}</code></pre>\`;
+                })
+                .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+                .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+                .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+                .replace(/\\n/g, '<br>');
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function addContextPill(context) {
+            const container = document.getElementById('activeContexts');
+            const pill = document.createElement('div');
+            pill.className = 'context-pill';
+            pill.innerHTML = \`
+                <span>\${context.display}</span>
+                <span class="remove" onclick="removeContext(\${currentContexts.length})">×</span>
+            \`;
+            container.appendChild(pill);
+            
+            currentContexts.push(context);
+        }
+
+        function updateActiveContexts(contexts) {
+            const container = document.getElementById('activeContexts');
+            container.innerHTML = '';
+            currentContexts = contexts || [];
+            
+            contexts.forEach((ctx, index) => {
+                const pill = document.createElement('div');
+                pill.className = 'context-pill';
+                pill.innerHTML = \`
+                    <span>\${ctx.summary}</span>
+                    <span class="remove" onclick="removeContext(\${index})">×</span>
+                \`;
+                container.appendChild(pill);
+            });
+        }
+
+        function removeContext(index) {
+            vscode.postMessage({ 
+                type: 'removeContext', 
+                index: index 
+            });
+        }
+
+        function copyCode() {
+            // Find the last code block
+            const codes = document.querySelectorAll('pre code');
+            if (codes.length > 0) {
+                const code = codes[codes.length - 1].textContent;
+                vscode.postMessage({ type: 'copyCode', code: code });
+            }
+        }
+
+        function insertCode() {
+            const codes = document.querySelectorAll('pre code');
+            if (codes.length > 0) {
+                const code = codes[codes.length - 1].textContent;
+                vscode.postMessage({ type: 'insertCode', code: code });
+            }
+        }
+
+        function applyCode() {
+            const codes = document.querySelectorAll('pre code');
+            if (codes.length > 0) {
+                const code = codes[codes.length - 1].textContent;
+                vscode.postMessage({ type: 'applyInEditor', code: code });
+            }
+        }
+    </script>
 </body>
 </html>`;
-  }
+}
 
   // Cleanup
   public dispose() {
-    this._disposables.forEach(d => d.dispose());
+    this._disposables.forEach((d) => d.dispose());
   }
 }
